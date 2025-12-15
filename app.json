@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Traysikel KO",
+    "slug": "traysikel-ko",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#2F80ED"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.traysikelko.app",
+      "infoPlist": {
+        "NSPhoneCallUsageDescription": "This app needs access to make emergency phone calls.",
+        "NSCameraUsageDescription": "This app needs access to your camera to take photos for your profile and documents.",
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to select photos for your profile and documents."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#2F80ED"
+      },
+      "package": "com.traysikelko.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "CALL_PHONE",
+        "READ_PHONE_STATE"
+      ]
+    },
+    "web": {}
+  }
+}

@@ -1,0 +1,1140 @@
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Image,
+  Alert,
+  TextInput,
+  Modal,
+  Dimensions,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Card, BottomNavigation, Button } from '../components';
+import { colors, typography, spacing, borderRadius } from '../theme';
+import { Ionicons } from '@expo/vector-icons';
+import * as ImagePickerLib from 'expo-image-picker';
+import { getUserAccount, updateUserAccount } from '../utils/userStorage';
+import { saveImagePermanently } from '../utils/imageStorage';
+
+interface ProfileScreenProps {
+  userType: 'passenger' | 'driver';
+  activeTab: string;
+  onTabChange: (tab: string) => void;
+  onSOSPress: () => void;
+  onLogout: () => void;
+}
+
+export const ProfileScreen: React.FC<ProfileScreenProps> = ({
+  userType,
+  activeTab,
+  onTabChange,
+  onSOSPress,
+  onLogout,
+}) => {
+  const [profileData, setProfileData] = useState({
+    name: '',
+    phone: '',
+    email: '',
+    profilePhoto: undefined as string | undefined,
+    address: undefined as string | undefined,
+    licenseNumber: undefined as string | undefined,
+    plateNumber: undefined as string | undefined,
+    verificationStatus: undefined as 'verified' | 'pending' | 'rejected' | undefined,
+  });
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [imageTitle, setImageTitle] = useState<string>('');
+  const [licenseFrontPhoto, setLicenseFrontPhoto] = useState<string | undefined>(undefined);
+  const [licenseBackPhoto, setLicenseBackPhoto] = useState<string | undefined>(undefined);
+  const [orcrPhoto, setOrcrPhoto] = useState<string | undefined>(undefined);
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [showChangeEmailModal, setShowChangeEmailModal] = useState(false);
+  const [showChangeNameModal, setShowChangeNameModal] = useState(false);
+  const [showChangePhoneModal, setShowChangePhoneModal] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newPhone, setNewPhone] = useState('');
+  const [isSettingsExpanded, setIsSettingsExpanded] = useState(false);
+
+  // Load user data from AsyncStorage
+  useEffect(() => {
+    const loadUserData = async () => {
+      try {
+        const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+        if (currentUserEmail) {
+          const userAccount = await getUserAccount(currentUserEmail);
+          if (userAccount) {
+            // Check if driver account is verified
+            if (userType === 'driver' && userAccount.accountType === 'driver') {
+              const verificationStatus = userAccount.verificationStatus || 'pending';
+              if (verificationStatus !== 'verified') {
+                // Show alert and prevent access
+                Alert.alert(
+                  verificationStatus === 'pending' 
+                    ? 'Account Under Review'
+                    : 'Account Rejected',
+                  verificationStatus === 'pending'
+                    ? 'Your driver account is currently under review. Please wait for admin approval.'
+                    : verificationStatus === 'rejected'
+                    ? userAccount.rejectionReason 
+                      ? `Your driver account has been rejected. Reason: ${userAccount.rejectionReason}`
+                      : 'Your driver account has been rejected. Please contact support.'
+                    : 'Your driver account has not been verified yet.',
+                  [{ text: 'OK' }]
+                );
+                return;
+              }
+            }
+            
+            setProfileData({
+              name: userAccount.fullName,
+              phone: userAccount.phoneNumber,
+              email: userAccount.email,
+              profilePhoto: userAccount.profilePhoto,
+              address: userAccount.address,
+              licenseNumber: userAccount.driversLicenseNumber,
+              plateNumber: userAccount.plateNumber,
+              verificationStatus: userType === 'driver' ? (userAccount.verificationStatus || 'pending') : undefined,
+            });
+            
+            // Load license and ORCR photos for drivers
+            if (userType === 'driver' && userAccount.accountType === 'driver') {
+              setLicenseFrontPhoto(userAccount.licenseFrontPhoto);
+              setLicenseBackPhoto(userAccount.licenseBackPhoto);
+              setOrcrPhoto(userAccount.orcrPhoto);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error loading user data:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadUserData();
+  }, [userType]);
+
+  const tabs = [
+    { name: 'home', label: 'Home', icon: 'home-outline' as const, activeIcon: 'home' as const },
+    { name: 'trips', label: 'Trips', icon: 'time-outline' as const, activeIcon: 'time' as const },
+    { name: 'profile', label: 'Profile', icon: 'person-outline' as const, activeIcon: 'person' as const },
+  ];
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+      if (currentUserEmail) {
+        await updateUserAccount(currentUserEmail, {
+          fullName: profileData.name,
+          phoneNumber: profileData.phone,
+          profilePhoto: profileData.profilePhoto,
+          ...(userType === 'driver' && {
+            address: profileData.address,
+            driversLicenseNumber: profileData.licenseNumber,
+            plateNumber: profileData.plateNumber,
+          }),
+        });
+        Alert.alert('Success', 'Profile updated successfully', [
+          {
+            text: 'OK',
+            onPress: () => {
+              // Reload user data to ensure profile photo is displayed
+              const reloadData = async () => {
+                const userAccount = await getUserAccount(currentUserEmail);
+                if (userAccount) {
+                  setProfileData((prev) => ({
+                    ...prev,
+                    profilePhoto: userAccount.profilePhoto,
+                  }));
+                }
+              };
+              reloadData();
+            },
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error('Error saving profile:', error);
+      Alert.alert('Error', 'Failed to save profile. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handlePhotoSelect = async (uri: string) => {
+    try {
+      // Save the image to a permanent location
+      const permanentUri = await saveImagePermanently(uri);
+      setProfileData((prev) => ({ ...prev, profilePhoto: permanentUri }));
+      // Show feedback that photo was selected
+      Alert.alert('Photo Selected', 'Don\'t forget to save your profile to keep the changes.');
+    } catch (error) {
+      console.error('Error saving profile photo:', error);
+      Alert.alert('Error', 'Failed to save photo. Please try again.');
+      // Still set the URI even if save fails (fallback)
+      setProfileData((prev) => ({ ...prev, profilePhoto: uri }));
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (!newPassword || !confirmPassword) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match');
+      return;
+    }
+    if (newPassword.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters');
+      return;
+    }
+    // TODO: Implement password change logic
+    Alert.alert('Success', 'Password changed successfully');
+    setShowChangePasswordModal(false);
+    setNewPassword('');
+    setConfirmPassword('');
+  };
+
+  const handleChangeEmail = async () => {
+    if (!newEmail) {
+      Alert.alert('Error', 'Please enter a new email');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(newEmail)) {
+      Alert.alert('Error', 'Please enter a valid email address');
+      return;
+    }
+    try {
+      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+      if (currentUserEmail) {
+        await updateUserAccount(currentUserEmail, { email: newEmail });
+        Alert.alert('Success', 'Email updated successfully');
+        setShowChangeEmailModal(false);
+        setNewEmail('');
+        // Reload user data
+        const userAccount = await getUserAccount(newEmail);
+        if (userAccount) {
+          setProfileData(prev => ({ ...prev, email: newEmail }));
+        }
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to update email');
+    }
+  };
+
+  const handleChangeName = async () => {
+    if (!newName.trim()) {
+      Alert.alert('Error', 'Please enter a name');
+      return;
+    }
+    try {
+      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+      if (currentUserEmail) {
+        await updateUserAccount(currentUserEmail, { fullName: newName.trim() });
+        Alert.alert('Success', 'Name updated successfully');
+        setShowChangeNameModal(false);
+        setNewName('');
+        setProfileData(prev => ({ ...prev, name: newName.trim() }));
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to update name');
+    }
+  };
+
+  const handleChangePhone = async () => {
+    if (!newPhone.trim()) {
+      Alert.alert('Error', 'Please enter a phone number');
+      return;
+    }
+    try {
+      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+      if (currentUserEmail) {
+        await updateUserAccount(currentUserEmail, { phoneNumber: newPhone.trim() });
+        Alert.alert('Success', 'Phone number updated successfully');
+        setShowChangePhoneModal(false);
+        setNewPhone('');
+        setProfileData(prev => ({ ...prev, phone: newPhone.trim() }));
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to update phone number');
+    }
+  };
+
+  const menuItems = [
+    { icon: 'help-circle-outline' as const, label: 'Support', onPress: () => Alert.alert('Support', 'Support screen') },
+    { icon: 'alert-circle-outline' as const, label: 'SOS Help', onPress: onSOSPress, color: colors.error },
+    { icon: 'document-text-outline' as const, label: 'Terms & Privacy', onPress: () => Alert.alert('Terms', 'Terms screen') },
+  ];
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Profile Header */}
+        <View style={styles.profileHeader}>
+          <View style={styles.avatarContainer}>
+            {profileData.profilePhoto ? (
+              <Image
+                source={{ uri: profileData.profilePhoto }}
+                style={styles.avatar}
+              />
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <Ionicons name="person" size={50} color={colors.gray} />
+              </View>
+            )}
+            <TouchableOpacity
+              style={styles.editAvatarButton}
+              onPress={() => {
+                // Show image picker options
+                Alert.alert(
+                  'Change Profile Photo',
+                  'Choose an option',
+                  [
+                    {
+                      text: 'Camera',
+                      onPress: async () => {
+                        const { status } = await ImagePickerLib.requestCameraPermissionsAsync();
+                        if (status === 'granted') {
+                          const result = await ImagePickerLib.launchCameraAsync({
+                            allowsEditing: true,
+                            aspect: [1, 1],
+                            quality: 0.8,
+                          });
+                          if (!result.canceled && result.assets[0]) {
+                            await handlePhotoSelect(result.assets[0].uri);
+                            // Save immediately
+                            const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+                            if (currentUserEmail) {
+                              await updateUserAccount(currentUserEmail, {
+                                profilePhoto: result.assets[0].uri,
+                              });
+                            }
+                          }
+                        } else {
+                          Alert.alert('Permission needed', 'Please grant camera permissions');
+                        }
+                      },
+                    },
+                    {
+                      text: 'Gallery',
+                      onPress: async () => {
+                        const { status } = await ImagePickerLib.requestMediaLibraryPermissionsAsync();
+                        if (status === 'granted') {
+                          const result = await ImagePickerLib.launchImageLibraryAsync({
+                            allowsEditing: true,
+                            aspect: [1, 1],
+                            quality: 0.8,
+                          });
+                          if (!result.canceled && result.assets[0]) {
+                            await handlePhotoSelect(result.assets[0].uri);
+                            // Save immediately
+                            const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+                            if (currentUserEmail) {
+                              await updateUserAccount(currentUserEmail, {
+                                profilePhoto: result.assets[0].uri,
+                              });
+                            }
+                          }
+                        } else {
+                          Alert.alert('Permission needed', 'Please grant gallery permissions');
+                        }
+                      },
+                    },
+                    { text: 'Cancel', style: 'cancel' },
+                  ]
+                );
+              }}
+            >
+              <Ionicons name="camera" size={20} color={colors.white} />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.profileName}>{profileData.name}</Text>
+          <Text style={styles.profileSubtext}>
+            {userType === 'passenger' ? 'Passenger' : 'Tricycle Driver'}
+          </Text>
+          {userType === 'driver' && profileData.verificationStatus && (
+            <View style={[
+              styles.verificationBadge,
+              profileData.verificationStatus === 'verified' && styles.verificationBadgeVerified
+            ]}>
+              <Ionicons
+                name={profileData.verificationStatus === 'verified' ? 'checkmark-circle' : 'time'}
+                size={16}
+                color={profileData.verificationStatus === 'verified' ? colors.success : colors.warning}
+              />
+              <Text style={[
+                styles.verificationText,
+                profileData.verificationStatus === 'verified' && styles.verificationTextVerified
+              ]}>
+                {profileData.verificationStatus === 'verified' ? 'Verified Driver' : 'Under Review'}
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {/* Settings Section - Collapsible */}
+        <Card style={styles.sectionCard}>
+          <TouchableOpacity
+            style={styles.settingsHeader}
+            onPress={() => setIsSettingsExpanded(!isSettingsExpanded)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.sectionHeaderLeft}>
+              <Ionicons name="settings-outline" size={24} color={colors.primary} />
+              <Text style={styles.sectionTitle}>Settings</Text>
+            </View>
+            <Ionicons
+              name={isSettingsExpanded ? "chevron-up" : "chevron-down"}
+              size={20}
+              color={colors.gray}
+            />
+          </TouchableOpacity>
+
+          {/* Personal Information inside Settings - Hidden by default */}
+          {isSettingsExpanded && (
+            <View style={styles.settingsSection}>
+            <Text style={styles.subsectionTitle}>Personal Information</Text>
+            
+            <TouchableOpacity
+              style={styles.settingsItem}
+              onPress={() => {
+                setNewName(profileData.name);
+                setShowChangeNameModal(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.settingsItemLeft}>
+                <Ionicons name="person-outline" size={20} color={colors.primary} />
+                <View style={styles.settingsItemContent}>
+                  <Text style={styles.settingsItemLabel}>Full Name</Text>
+                  <Text style={styles.settingsItemValue}>{profileData.name}</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.gray} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.settingsItem}
+              onPress={() => {
+                setNewPhone(profileData.phone);
+                setShowChangePhoneModal(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.settingsItemLeft}>
+                <Ionicons name="call-outline" size={20} color={colors.primary} />
+                <View style={styles.settingsItemContent}>
+                  <Text style={styles.settingsItemLabel}>Phone Number</Text>
+                  <Text style={styles.settingsItemValue}>{profileData.phone}</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.gray} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.settingsItem}
+              onPress={() => {
+                setNewEmail(profileData.email);
+                setShowChangeEmailModal(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.settingsItemLeft}>
+                <Ionicons name="mail-outline" size={20} color={colors.primary} />
+                <View style={styles.settingsItemContent}>
+                  <Text style={styles.settingsItemLabel}>Email</Text>
+                  <Text style={styles.settingsItemValue}>{profileData.email}</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.gray} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.settingsItem}
+              onPress={() => setShowChangePasswordModal(true)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.settingsItemLeft}>
+                <Ionicons name="lock-closed-outline" size={20} color={colors.primary} />
+                <View style={styles.settingsItemContent}>
+                  <Text style={styles.settingsItemLabel}>Password</Text>
+                  <Text style={styles.settingsItemValue}>••••••••</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.gray} />
+            </TouchableOpacity>
+
+            {userType === 'driver' && profileData.address && (
+              <View style={styles.settingsItem}>
+                <Ionicons name="location-outline" size={20} color={colors.gray} />
+                <View style={styles.settingsItemContent}>
+                  <Text style={styles.settingsItemLabel}>Address</Text>
+                  <Text style={styles.settingsItemValue}>{profileData.address}</Text>
+                </View>
+              </View>
+            )}
+            </View>
+          )}
+        </Card>
+
+        {/* Driver Specific Information */}
+        {userType === 'driver' && (
+          <>
+            <Card style={styles.sectionCard}>
+              <Text style={styles.sectionTitle}>Vehicle Information</Text>
+              <View style={styles.infoList}>
+                <View style={styles.infoItem}>
+                  <Ionicons name="bicycle" size={20} color={colors.gray} />
+                  <View style={styles.infoContent}>
+                    <Text style={styles.infoLabel}>Vehicle Type</Text>
+                    <Text style={styles.infoValue}>Tricycle</Text>
+                  </View>
+                </View>
+                {profileData.plateNumber && (
+                  <View style={styles.infoItem}>
+                    <Ionicons name="car-outline" size={20} color={colors.gray} />
+                    <View style={styles.infoContent}>
+                      <Text style={styles.infoLabel}>Plate Number</Text>
+                      <Text style={styles.infoValue}>{profileData.plateNumber}</Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+            </Card>
+
+            <Card style={styles.sectionCard}>
+              <Text style={styles.sectionTitle}>License Information</Text>
+              <View style={styles.infoList}>
+                {profileData.licenseNumber && (
+                  <View style={styles.infoItem}>
+                    <Ionicons name="id-card-outline" size={20} color={colors.gray} />
+                    <View style={styles.infoContent}>
+                      <Text style={styles.infoLabel}>License Number</Text>
+                      <Text style={styles.infoValue}>{profileData.licenseNumber}</Text>
+                    </View>
+                  </View>
+                )}
+                <TouchableOpacity 
+                  style={styles.viewDocumentsButton}
+                  onPress={() => {
+                    if (licenseFrontPhoto || licenseBackPhoto || orcrPhoto) {
+                      // Show options to view different documents
+                      const options: any[] = [];
+                      if (licenseFrontPhoto) {
+                        options.push({
+                          text: 'License Front',
+                          onPress: () => {
+                            setSelectedImage(licenseFrontPhoto);
+                            setImageTitle('Driver\'s License - Front');
+                          },
+                        });
+                      }
+                      if (licenseBackPhoto) {
+                        options.push({
+                          text: 'License Back',
+                          onPress: () => {
+                            setSelectedImage(licenseBackPhoto);
+                            setImageTitle('Driver\'s License - Back');
+                          },
+                        });
+                      }
+                      if (orcrPhoto) {
+                        options.push({
+                          text: 'OR/CR Document',
+                          onPress: () => {
+                            setSelectedImage(orcrPhoto);
+                            setImageTitle('OR/CR Document');
+                          },
+                        });
+                      }
+                      options.push({ text: 'Cancel', style: 'cancel' });
+                      Alert.alert('View Documents', 'Select a document to view', options);
+                    } else {
+                      Alert.alert('No Documents', 'No license or OR/CR documents available to view.');
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+                  <Text style={styles.viewDocumentsText}>View License & OR/CR</Text>
+                  <Ionicons name="chevron-forward" size={20} color={colors.primary} />
+                </TouchableOpacity>
+              </View>
+            </Card>
+          </>
+        )}
+
+        {/* Menu Items */}
+        <View style={styles.menuSection}>
+          {menuItems.map((item, index) => (
+            <TouchableOpacity
+              key={index}
+              style={styles.menuItem}
+              onPress={item.onPress}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={item.icon}
+                size={24}
+                color={item.color || colors.primary}
+              />
+              <Text style={[styles.menuItemText, item.color && { color: item.color }]}>
+                {item.label}
+              </Text>
+              <Ionicons name="chevron-forward" size={20} color={colors.gray} />
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <TouchableOpacity
+          style={styles.logoutButton}
+          onPress={() => {
+            Alert.alert(
+              'Confirm Logout',
+              `Are you sure you want to logout from your ${userType === 'passenger' ? 'passenger' : 'driver'} account?`,
+              [
+                {
+                  text: 'Cancel',
+                  style: 'cancel',
+                },
+                {
+                  text: 'Logout',
+                  style: 'destructive',
+                  onPress: onLogout,
+                },
+              ]
+            );
+          }}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="log-out-outline" size={22} color={colors.error} />
+          <Text style={styles.logoutButtonText}>Logout</Text>
+        </TouchableOpacity>
+      </ScrollView>
+
+      <BottomNavigation
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabPress={onTabChange}
+      />
+
+      {/* Full Size Image Modal */}
+      <Modal
+        visible={selectedImage !== null}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setSelectedImage(null)}
+      >
+        <View style={styles.imageModalContainer}>
+          <View style={styles.imageModalHeader}>
+            <Text style={styles.imageModalTitle}>{imageTitle}</Text>
+            <TouchableOpacity
+              onPress={() => setSelectedImage(null)}
+              style={styles.imageModalCloseButton}
+            >
+              <Ionicons name="close" size={28} color={colors.white} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            contentContainerStyle={styles.imageModalContent}
+            maximumZoomScale={3}
+            minimumZoomScale={1}
+          >
+            {selectedImage && (
+              <Image
+                source={{ uri: selectedImage }}
+                style={styles.fullSizeImage}
+                resizeMode="contain"
+              />
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* Change Password Modal */}
+      <Modal
+        visible={showChangePasswordModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowChangePasswordModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Change Password</Text>
+              <TouchableOpacity onPress={() => setShowChangePasswordModal(false)}>
+                <Ionicons name="close" size={24} color={colors.gray} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.modalBody}>
+              <View style={styles.modalInputContainer}>
+                <Text style={styles.modalInputLabel}>New Password</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={newPassword}
+                  onChangeText={setNewPassword}
+                  placeholder="Enter new password"
+                  secureTextEntry
+                />
+              </View>
+              <View style={styles.modalInputContainer}>
+                <Text style={styles.modalInputLabel}>Confirm Password</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  placeholder="Confirm new password"
+                  secureTextEntry
+                />
+              </View>
+              <Button
+                title="Change Password"
+                onPress={handleChangePassword}
+                style={styles.modalButton}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Change Email Modal */}
+      <Modal
+        visible={showChangeEmailModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowChangeEmailModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Change Email</Text>
+              <TouchableOpacity onPress={() => setShowChangeEmailModal(false)}>
+                <Ionicons name="close" size={24} color={colors.gray} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.modalBody}>
+              <View style={styles.modalInputContainer}>
+                <Text style={styles.modalInputLabel}>New Email</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={newEmail}
+                  onChangeText={setNewEmail}
+                  placeholder="Enter new email"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                />
+              </View>
+              <Button
+                title="Change Email"
+                onPress={handleChangeEmail}
+                style={styles.modalButton}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Change Name Modal */}
+      <Modal
+        visible={showChangeNameModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowChangeNameModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Change Name</Text>
+              <TouchableOpacity onPress={() => setShowChangeNameModal(false)}>
+                <Ionicons name="close" size={24} color={colors.gray} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.modalBody}>
+              <View style={styles.modalInputContainer}>
+                <Text style={styles.modalInputLabel}>Full Name</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={newName}
+                  onChangeText={setNewName}
+                  placeholder="Enter your full name"
+                />
+              </View>
+              <Button
+                title="Change Name"
+                onPress={handleChangeName}
+                style={styles.modalButton}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Change Phone Modal */}
+      <Modal
+        visible={showChangePhoneModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowChangePhoneModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Change Phone Number</Text>
+              <TouchableOpacity onPress={() => setShowChangePhoneModal(false)}>
+                <Ionicons name="close" size={24} color={colors.gray} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.modalBody}>
+              <View style={styles.modalInputContainer}>
+                <Text style={styles.modalInputLabel}>Phone Number</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={newPhone}
+                  onChangeText={setNewPhone}
+                  placeholder="Enter phone number"
+                  keyboardType="phone-pad"
+                />
+              </View>
+              <Button
+                title="Change Phone Number"
+                onPress={handleChangePhone}
+                style={styles.modalButton}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    padding: spacing.lg,
+    paddingBottom: 100,
+  },
+  profileHeader: {
+    alignItems: 'center',
+    marginBottom: spacing.xl,
+  },
+  avatarContainer: {
+    position: 'relative',
+    marginBottom: spacing.md,
+  },
+  avatarPlaceholder: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: colors.lightGray,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatar: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: colors.lightGray,
+  },
+  editAvatarButton: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    backgroundColor: colors.primary,
+    borderRadius: 20,
+    padding: 8,
+    ...require('../theme').shadows.small,
+  },
+  profileName: {
+    ...typography.h2,
+    marginBottom: spacing.xs,
+  },
+  profileSubtext: {
+    ...typography.body,
+    color: colors.gray,
+  },
+  verificationBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: borderRadius.full,
+    backgroundColor: colors.lightGray,
+  },
+  verificationBadgeVerified: {
+    backgroundColor: '#E8F5E9',
+  },
+  verificationText: {
+    ...typography.caption,
+    color: colors.warning,
+    fontWeight: '600',
+  },
+  verificationTextVerified: {
+    color: colors.success,
+  },
+  sectionCard: {
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
+  settingsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+  },
+  sectionHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  sectionTitle: {
+    ...typography.h3,
+    color: colors.darkText,
+  },
+  settingsSection: {
+    marginTop: spacing.sm,
+  },
+  subsectionTitle: {
+    ...typography.bodyBold,
+    fontSize: 14,
+    color: colors.gray,
+    marginBottom: spacing.md,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  settingsItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.sm,
+    backgroundColor: colors.lightGray,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.sm,
+  },
+  settingsItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: spacing.md,
+  },
+  settingsItemContent: {
+    flex: 1,
+  },
+  settingsItemLabel: {
+    ...typography.caption,
+    fontSize: 12,
+    color: colors.gray,
+    marginBottom: 2,
+  },
+  settingsItemValue: {
+    ...typography.body,
+    fontSize: 15,
+    color: colors.darkText,
+    fontWeight: '500',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: borderRadius.xl,
+    borderTopRightRadius: borderRadius.xl,
+    padding: spacing.lg,
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.lg,
+  },
+  modalTitle: {
+    ...typography.h2,
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.darkText,
+  },
+  modalBody: {
+    gap: spacing.md,
+  },
+  modalInputContainer: {
+    marginBottom: spacing.md,
+  },
+  modalInputLabel: {
+    ...typography.body,
+    fontSize: 14,
+    color: colors.darkText,
+    marginBottom: spacing.sm,
+    fontWeight: '600',
+  },
+  modalInput: {
+    ...typography.body,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    backgroundColor: colors.white,
+    fontSize: 16,
+  },
+  modalButton: {
+    marginTop: spacing.md,
+  },
+  infoList: {
+    gap: spacing.md,
+  },
+  infoItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  infoContent: {
+    flex: 1,
+  },
+  infoLabel: {
+    ...typography.caption,
+    color: colors.gray,
+    marginBottom: 2,
+  },
+  infoValue: {
+    ...typography.body,
+    color: colors.darkText,
+  },
+  editInputText: {
+    ...typography.body,
+    color: colors.darkText,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    padding: spacing.sm,
+    backgroundColor: colors.white,
+    minHeight: 40,
+  },
+  editInputMultiline: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  viewDocumentsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    backgroundColor: colors.lightGray,
+    borderRadius: borderRadius.md,
+    marginTop: spacing.sm,
+  },
+  viewDocumentsText: {
+    ...typography.body,
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  menuSection: {
+    marginBottom: spacing.lg,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.white,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.sm,
+    ...require('../theme').shadows.small,
+  },
+  menuItemText: {
+    ...typography.body,
+    flex: 1,
+    color: colors.darkText,
+  },
+  logoutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.error + '10',
+    borderWidth: 1.5,
+    borderColor: colors.error,
+    borderRadius: borderRadius.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.xl,
+    marginTop: spacing.sm,
+  },
+  logoutButtonText: {
+    ...typography.bodyBold,
+    fontSize: 16,
+    color: colors.error,
+  },
+  imageModalContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageModalHeader: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: spacing.md,
+    paddingTop: spacing.xl,
+    zIndex: 1000,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  imageModalTitle: {
+    ...typography.h3,
+    color: colors.white,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  imageModalCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageModalContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: Dimensions.get('window').width,
+    paddingVertical: spacing.xl,
+  },
+  fullSizeImage: {
+    width: Dimensions.get('window').width,
+    height: Dimensions.get('window').width * 1.5,
+  },
+});
