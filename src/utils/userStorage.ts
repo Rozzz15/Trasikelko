@@ -7,6 +7,11 @@ export interface UserAccount {
   phoneNumber: string;
   accountType: 'passenger' | 'driver';
   profilePhoto?: string;
+  // Passenger-specific fields
+  isSeniorCitizen?: boolean;
+  isPWD?: boolean;
+  seniorCitizenId?: string;
+  pwdId?: string;
   // Driver-specific fields
   address?: string;
   driversLicenseNumber?: string;

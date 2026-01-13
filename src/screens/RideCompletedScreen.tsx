@@ -13,6 +13,7 @@ import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { updateTrip, setActiveTrip } from '../utils/tripStorage';
 import { updateDriverStatus } from '../utils/driverLocationStorage';
+import { getDriverSafetyRecord } from '../utils/safetyStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface RideCompletedScreenProps {
@@ -120,6 +121,13 @@ export const RideCompletedScreen: React.FC<RideCompletedScreenProps> = ({ naviga
       const currentUserEmail = await AsyncStorage.getItem('current_user_email');
       if (currentUserEmail) {
         await updateDriverStatus(currentUserEmail, 'available');
+        
+        // Recalculate safety badge after trip completion (rating affects badge)
+        try {
+          await getDriverSafetyRecord(currentUserEmail);
+        } catch (error) {
+          console.error('Error updating safety badge:', error);
+        }
       }
     } catch (error) {
       console.error('Error updating trip rating:', error);

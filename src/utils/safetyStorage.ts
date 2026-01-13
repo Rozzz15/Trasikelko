@@ -36,9 +36,10 @@ export const calculateSafetyBadge = async (driverEmail: string): Promise<SafetyB
     const incidents = await getDriverIncidents(driverEmail);
     const complaints = await getDriverComplaints(driverEmail);
     
-    // Calculate average rating
+    // Calculate average rating from passenger ratings (passengerRating = rating BY passenger TO driver)
+    // passengerRating is the rating passengers give to drivers, which represents the driver's performance
     const ratings = completedTrips
-      .map(t => t.driverRating)
+      .map(t => t.passengerRating)
       .filter((r): r is number => r !== undefined && r > 0);
     const averageRating = ratings.length > 0
       ? ratings.reduce((sum, r) => sum + r, 0) / ratings.length
@@ -123,7 +124,7 @@ export const getDriverSafetyRecord = async (driverEmail: string): Promise<Driver
       const completedTrips = trips.filter(t => t.status === 'completed');
       
       const ratings = completedTrips
-        .map(t => t.driverRating)
+        .map(t => t.passengerRating)
         .filter((r): r is number => r !== undefined && r > 0);
       const averageRating = ratings.length > 0
         ? ratings.reduce((sum, r) => sum + r, 0) / ratings.length
@@ -152,7 +153,7 @@ export const getDriverSafetyRecord = async (driverEmail: string): Promise<Driver
       const completedTrips = trips.filter(t => t.status === 'completed');
       
       const ratings = completedTrips
-        .map(t => t.driverRating)
+        .map(t => t.passengerRating)
         .filter((r): r is number => r !== undefined && r > 0);
       const averageRating = ratings.length > 0
         ? ratings.reduce((sum, r) => sum + r, 0) / ratings.length

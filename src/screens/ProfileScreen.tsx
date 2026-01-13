@@ -13,12 +13,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Card, BottomNavigation, Button } from '../components';
+import { Card, BottomNavigation, Button, SafetyBadge } from '../components';
 import { colors, typography, spacing, borderRadius } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePickerLib from 'expo-image-picker';
 import { getUserAccount, updateUserAccount } from '../utils/userStorage';
 import { saveImagePermanently } from '../utils/imageStorage';
+import { calculateSafetyBadge, getDriverSafetyRecord } from '../utils/safetyStorage';
 
 interface ProfileScreenProps {
   userType: 'passenger' | 'driver';
@@ -44,6 +45,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     licenseNumber: undefined as string | undefined,
     plateNumber: undefined as string | undefined,
     verificationStatus: undefined as 'verified' | 'pending' | 'rejected' | undefined,
+    isSeniorCitizen: false,
+    isPWD: false,
+    seniorCitizenId: undefined as string | undefined,
+    pwdId: undefined as string | undefined,
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -62,6 +67,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [isSettingsExpanded, setIsSettingsExpanded] = useState(false);
+  const [safetyBadge, setSafetyBadge] = useState<'green' | 'yellow' | 'red'>('yellow');
+  const [driverAccount, setDriverAccount] = useState<any>(null);
 
   // Load user data from AsyncStorage
   useEffect(() => {
@@ -102,13 +109,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               licenseNumber: userAccount.driversLicenseNumber,
               plateNumber: userAccount.plateNumber,
               verificationStatus: userType === 'driver' ? (userAccount.verificationStatus || 'pending') : undefined,
+              isSeniorCitizen: userAccount.isSeniorCitizen || false,
+              isPWD: userAccount.isPWD || false,
+              seniorCitizenId: userAccount.seniorCitizenId,
+              pwdId: userAccount.pwdId,
             });
             
             // Load license and ORCR photos for drivers
             if (userType === 'driver' && userAccount.accountType === 'driver') {
+              setDriverAccount(userAccount);
               setLicenseFrontPhoto(userAccount.licenseFrontPhoto);
               setLicenseBackPhoto(userAccount.licenseBackPhoto);
               setOrcrPhoto(userAccount.orcrPhoto);
+              
+              // Load safety badge for verified drivers
+              if (verificationStatus === 'verified') {
+                try {
+                  const badge = await calculateSafetyBadge(currentUserEmail);
+                  setSafetyBadge(badge);
+                } catch (error) {
+                  console.error('Error loading safety badge:', error);
+                }
+              }
             }
           }
         }
@@ -137,6 +159,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           fullName: profileData.name,
           phoneNumber: profileData.phone,
           profilePhoto: profileData.profilePhoto,
+          ...(userType === 'passenger' && {
+            isSeniorCitizen: profileData.isSeniorCitizen,
+            isPWD: profileData.isPWD,
+            seniorCitizenId: profileData.seniorCitizenId,
+            pwdId: profileData.pwdId,
+          }),
           ...(userType === 'driver' && {
             address: profileData.address,
             driversLicenseNumber: profileData.licenseNumber,
@@ -367,21 +395,26 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             {userType === 'passenger' ? 'Passenger' : 'Tricycle Driver'}
           </Text>
           {userType === 'driver' && profileData.verificationStatus && (
-            <View style={[
-              styles.verificationBadge,
-              profileData.verificationStatus === 'verified' && styles.verificationBadgeVerified
-            ]}>
-              <Ionicons
-                name={profileData.verificationStatus === 'verified' ? 'checkmark-circle' : 'time'}
-                size={16}
-                color={profileData.verificationStatus === 'verified' ? colors.success : colors.warning}
-              />
-              <Text style={[
-                styles.verificationText,
-                profileData.verificationStatus === 'verified' && styles.verificationTextVerified
+            <View style={styles.badgeRow}>
+              <View style={[
+                styles.verificationBadge,
+                profileData.verificationStatus === 'verified' && styles.verificationBadgeVerified
               ]}>
-                {profileData.verificationStatus === 'verified' ? 'Verified Driver' : 'Under Review'}
-              </Text>
+                <Ionicons
+                  name={profileData.verificationStatus === 'verified' ? 'checkmark-circle' : 'time'}
+                  size={16}
+                  color={profileData.verificationStatus === 'verified' ? colors.success : colors.warning}
+                />
+                <Text style={[
+                  styles.verificationText,
+                  profileData.verificationStatus === 'verified' && styles.verificationTextVerified
+                ]}>
+                  {profileData.verificationStatus === 'verified' ? 'Verified Driver' : 'Under Review'}
+                </Text>
+              </View>
+              {profileData.verificationStatus === 'verified' && (
+                <SafetyBadge badgeColor={safetyBadge} size="medium" />
+              )}
             </View>
           )}
         </View>
@@ -487,6 +520,99 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 </View>
               </View>
             )}
+
+            {/* Passenger-specific: Senior Citizen / PWD Settings */}
+            {userType === 'passenger' && (
+              <>
+                <Text style={styles.subsectionTitle}>Discount Eligibility</Text>
+                
+                <TouchableOpacity
+                  style={styles.settingsItem}
+                  onPress={async () => {
+                    const newValue = !profileData.isSeniorCitizen;
+                    const updatedData = {
+                      ...profileData,
+                      isSeniorCitizen: newValue,
+                      // If enabling Senior, disable PWD (can only have one discount)
+                      isPWD: newValue ? false : profileData.isPWD,
+                    };
+                    setProfileData(updatedData);
+                    
+                    // Save immediately
+                    try {
+                      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+                      if (currentUserEmail) {
+                        await updateUserAccount(currentUserEmail, {
+                          isSeniorCitizen: updatedData.isSeniorCitizen,
+                          isPWD: updatedData.isPWD,
+                        });
+                        Alert.alert('Success', newValue ? 'Senior Citizen discount enabled (20% off)' : 'Senior Citizen discount disabled');
+                      }
+                    } catch (error) {
+                      Alert.alert('Error', 'Failed to update discount status');
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.settingsItemLeft}>
+                    <Ionicons 
+                      name={profileData.isSeniorCitizen ? "checkmark-circle" : "ellipse-outline"} 
+                      size={20} 
+                      color={profileData.isSeniorCitizen ? colors.success : colors.gray} 
+                    />
+                    <View style={styles.settingsItemContent}>
+                      <Text style={styles.settingsItemLabel}>Senior Citizen</Text>
+                      <Text style={styles.settingsItemValue}>
+                        {profileData.isSeniorCitizen ? 'Eligible for 20% discount' : 'Not registered'}
+                      </Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.settingsItem}
+                  onPress={async () => {
+                    const newValue = !profileData.isPWD;
+                    const updatedData = {
+                      ...profileData,
+                      isPWD: newValue,
+                      // If enabling PWD, disable Senior (can only have one discount)
+                      isSeniorCitizen: newValue ? false : profileData.isSeniorCitizen,
+                    };
+                    setProfileData(updatedData);
+                    
+                    // Save immediately
+                    try {
+                      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+                      if (currentUserEmail) {
+                        await updateUserAccount(currentUserEmail, {
+                          isSeniorCitizen: updatedData.isSeniorCitizen,
+                          isPWD: updatedData.isPWD,
+                        });
+                        Alert.alert('Success', newValue ? 'PWD discount enabled (20% off)' : 'PWD discount disabled');
+                      }
+                    } catch (error) {
+                      Alert.alert('Error', 'Failed to update discount status');
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.settingsItemLeft}>
+                    <Ionicons 
+                      name={profileData.isPWD ? "checkmark-circle" : "ellipse-outline"} 
+                      size={20} 
+                      color={profileData.isPWD ? colors.success : colors.gray} 
+                    />
+                    <View style={styles.settingsItemContent}>
+                      <Text style={styles.settingsItemLabel}>Person with Disability (PWD)</Text>
+                      <Text style={styles.settingsItemValue}>
+                        {profileData.isPWD ? 'Eligible for 20% discount' : 'Not registered'}
+                      </Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              </>
+            )}
             </View>
           )}
         </Card>
@@ -516,6 +642,73 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </View>
             </Card>
 
+            {/* Verification Status Card */}
+            <Card style={styles.sectionCard}>
+              <Text style={styles.sectionTitle}>Verification Status</Text>
+              <View style={styles.verificationStatusContainer}>
+                <View style={[
+                  styles.verificationStatusBadge,
+                  profileData.verificationStatus === 'verified' && styles.verificationStatusVerified,
+                  profileData.verificationStatus === 'rejected' && styles.verificationStatusRejected,
+                  profileData.verificationStatus === 'pending' && styles.verificationStatusPending,
+                ]}>
+                  {profileData.verificationStatus === 'verified' ? (
+                    <>
+                      <Ionicons name="checkmark-circle" size={24} color={colors.success} />
+                      <Text style={[styles.verificationStatusText, styles.verificationStatusTextVerified]}>
+                        ✅ Verified
+                      </Text>
+                    </>
+                  ) : profileData.verificationStatus === 'rejected' ? (
+                    <>
+                      <Ionicons name="close-circle" size={24} color={colors.error} />
+                      <Text style={[styles.verificationStatusText, styles.verificationStatusTextRejected]}>
+                        ❌ Rejected / Suspended
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Ionicons name="time" size={24} color={colors.warning} />
+                      <Text style={[styles.verificationStatusText, styles.verificationStatusTextPending]}>
+                        ⏳ Pending Review
+                      </Text>
+                    </>
+                  )}
+                </View>
+                
+                {profileData.verificationStatus === 'rejected' && driverAccount?.rejectionReason && (
+                  <View style={styles.rejectionReasonContainer}>
+                    <Text style={styles.rejectionReasonLabel}>Rejection Reason:</Text>
+                    <Text style={styles.rejectionReasonText}>{driverAccount.rejectionReason}</Text>
+                  </View>
+                )}
+
+                {driverAccount?.submittedAt && (
+                  <View style={styles.submissionInfo}>
+                    <Text style={styles.submissionLabel}>
+                      Submitted: {new Date(driverAccount.submittedAt).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric'
+                      })}
+                    </Text>
+                  </View>
+                )}
+
+                {driverAccount?.verifiedAt && profileData.verificationStatus === 'verified' && (
+                  <View style={styles.submissionInfo}>
+                    <Text style={styles.submissionLabel}>
+                      Verified: {new Date(driverAccount.verifiedAt).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric'
+                      })}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </Card>
+
             <Card style={styles.sectionCard}>
               <Text style={styles.sectionTitle}>License Information</Text>
               <View style={styles.infoList}>
@@ -525,54 +718,111 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     <View style={styles.infoContent}>
                       <Text style={styles.infoLabel}>License Number</Text>
                       <Text style={styles.infoValue}>{profileData.licenseNumber}</Text>
+                      {driverAccount?.licenseExpiryDate && (
+                        <Text style={styles.expiryDate}>
+                          Expires: {new Date(driverAccount.licenseExpiryDate).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric'
+                          })}
+                        </Text>
+                      )}
                     </View>
                   </View>
                 )}
-                <TouchableOpacity 
-                  style={styles.viewDocumentsButton}
-                  onPress={() => {
-                    if (licenseFrontPhoto || licenseBackPhoto || orcrPhoto) {
-                      // Show options to view different documents
-                      const options: any[] = [];
-                      if (licenseFrontPhoto) {
-                        options.push({
-                          text: 'License Front',
-                          onPress: () => {
+                
+                {driverAccount?.franchiseNumber && (
+                  <View style={styles.infoItem}>
+                    <Ionicons name="document-text-outline" size={20} color={colors.gray} />
+                    <View style={styles.infoContent}>
+                      <Text style={styles.infoLabel}>Franchise Number</Text>
+                      <Text style={styles.infoValue}>{driverAccount.franchiseNumber}</Text>
+                    </View>
+                  </View>
+                )}
+
+                <View style={styles.documentsSection}>
+                  <Text style={styles.documentsSectionTitle}>Submitted Documents</Text>
+                  
+                  <View style={styles.documentList}>
+                    {licenseFrontPhoto ? (
+                      <View style={styles.documentItem}>
+                        <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                        <Text style={styles.documentName}>Driver's License (Front)</Text>
+                        <TouchableOpacity
+                          onPress={() => {
                             setSelectedImage(licenseFrontPhoto);
                             setImageTitle('Driver\'s License - Front');
-                          },
-                        });
-                      }
-                      if (licenseBackPhoto) {
-                        options.push({
-                          text: 'License Back',
-                          onPress: () => {
+                          }}
+                        >
+                          <Ionicons name="eye-outline" size={18} color={colors.primary} />
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <View style={styles.documentItem}>
+                        <Ionicons name="close-circle" size={16} color={colors.error} />
+                        <Text style={styles.documentNameMissing}>Driver's License (Front) - Missing</Text>
+                      </View>
+                    )}
+
+                    {licenseBackPhoto ? (
+                      <View style={styles.documentItem}>
+                        <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                        <Text style={styles.documentName}>Driver's License (Back)</Text>
+                        <TouchableOpacity
+                          onPress={() => {
                             setSelectedImage(licenseBackPhoto);
                             setImageTitle('Driver\'s License - Back');
-                          },
-                        });
-                      }
-                      if (orcrPhoto) {
-                        options.push({
-                          text: 'OR/CR Document',
-                          onPress: () => {
+                          }}
+                        >
+                          <Ionicons name="eye-outline" size={18} color={colors.primary} />
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <View style={styles.documentItem}>
+                        <Ionicons name="close-circle" size={16} color={colors.error} />
+                        <Text style={styles.documentNameMissing}>Driver's License (Back) - Missing</Text>
+                      </View>
+                    )}
+
+                    {orcrPhoto ? (
+                      <View style={styles.documentItem}>
+                        <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                        <Text style={styles.documentName}>OR/CR Document</Text>
+                        <TouchableOpacity
+                          onPress={() => {
                             setSelectedImage(orcrPhoto);
                             setImageTitle('OR/CR Document');
-                          },
-                        });
-                      }
-                      options.push({ text: 'Cancel', style: 'cancel' });
-                      Alert.alert('View Documents', 'Select a document to view', options);
-                    } else {
-                      Alert.alert('No Documents', 'No license or OR/CR documents available to view.');
-                    }
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="document-text-outline" size={20} color={colors.primary} />
-                  <Text style={styles.viewDocumentsText}>View License & OR/CR</Text>
-                  <Ionicons name="chevron-forward" size={20} color={colors.primary} />
-                </TouchableOpacity>
+                          }}
+                        >
+                          <Ionicons name="eye-outline" size={18} color={colors.primary} />
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <View style={styles.documentItem}>
+                        <Ionicons name="close-circle" size={16} color={colors.error} />
+                        <Text style={styles.documentNameMissing}>OR/CR Document - Missing</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {(profileData.verificationStatus === 'rejected' || profileData.verificationStatus === 'pending') && (
+                    <TouchableOpacity
+                      style={styles.updateDocumentsButton}
+                      onPress={() => {
+                        Alert.alert(
+                          'Update Documents',
+                          'To update your documents, please contact support or re-submit your application. Your updated documents will be reviewed by an administrator.',
+                          [{ text: 'OK' }]
+                        );
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="cloud-upload-outline" size={20} color={colors.white} />
+                      <Text style={styles.updateDocumentsText}>Update Documents</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
             </Card>
           </>
@@ -892,6 +1142,13 @@ const styles = StyleSheet.create({
   verificationTextVerified: {
     color: colors.success,
   },
+  badgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
   sectionCard: {
     padding: spacing.md,
     marginBottom: spacing.md,
@@ -1136,5 +1393,123 @@ const styles = StyleSheet.create({
   fullSizeImage: {
     width: Dimensions.get('window').width,
     height: Dimensions.get('window').width * 1.5,
+  },
+  verificationStatusContainer: {
+    gap: spacing.md,
+  },
+  verificationStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.lightGray,
+  },
+  verificationStatusVerified: {
+    backgroundColor: '#E8F5E9',
+  },
+  verificationStatusPending: {
+    backgroundColor: '#FFF3E0',
+  },
+  verificationStatusRejected: {
+    backgroundColor: '#FFEBEE',
+  },
+  verificationStatusText: {
+    ...typography.bodyBold,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  verificationStatusTextVerified: {
+    color: colors.success,
+  },
+  verificationStatusTextPending: {
+    color: colors.warning,
+  },
+  verificationStatusTextRejected: {
+    color: colors.error,
+  },
+  rejectionReasonContainer: {
+    padding: spacing.md,
+    backgroundColor: '#FFEBEE',
+    borderRadius: borderRadius.md,
+    marginTop: spacing.sm,
+  },
+  rejectionReasonLabel: {
+    ...typography.bodyBold,
+    fontSize: 14,
+    color: colors.error,
+    marginBottom: spacing.xs,
+  },
+  rejectionReasonText: {
+    ...typography.body,
+    fontSize: 14,
+    color: colors.darkText,
+  },
+  submissionInfo: {
+    marginTop: spacing.xs,
+  },
+  submissionLabel: {
+    ...typography.caption,
+    fontSize: 12,
+    color: colors.gray,
+  },
+  expiryDate: {
+    ...typography.caption,
+    fontSize: 12,
+    color: colors.warning,
+    marginTop: spacing.xs,
+    fontWeight: '600',
+  },
+  documentsSection: {
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  documentsSectionTitle: {
+    ...typography.bodyBold,
+    fontSize: 14,
+    color: colors.darkText,
+    marginBottom: spacing.sm,
+  },
+  documentList: {
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  documentItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.sm,
+    backgroundColor: colors.lightGray,
+    borderRadius: borderRadius.sm,
+  },
+  documentName: {
+    ...typography.body,
+    fontSize: 14,
+    flex: 1,
+    color: colors.darkText,
+  },
+  documentNameMissing: {
+    ...typography.body,
+    fontSize: 14,
+    flex: 1,
+    color: colors.error,
+    fontStyle: 'italic',
+  },
+  updateDocumentsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.primary,
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    marginTop: spacing.sm,
+  },
+  updateDocumentsText: {
+    ...typography.bodyBold,
+    fontSize: 15,
+    color: colors.white,
   },
 });

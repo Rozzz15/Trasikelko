@@ -10,12 +10,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BottomNavigation, SOSButton, StatusToggle, Card, Button } from '../components';
+import { BottomNavigation, SOSButton, StatusToggle, Card, Button, SafetyBadge } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { getUserAccount } from '../utils/userStorage';
-import { acceptBooking, getTrips } from '../utils/tripStorage';
+import { acceptBooking, getTrips, getTripsByUserId } from '../utils/tripStorage';
 import { updateDriverLocation, removeDriverLocation, updateDriverStatus, DriverStatus } from '../utils/driverLocationStorage';
+import { calculateSafetyBadge, getDriverSafetyRecord } from '../utils/safetyStorage';
 
 interface DriverHomeScreenProps {
   navigation?: any;
@@ -53,10 +54,80 @@ export const DriverHomeScreen: React.FC<DriverHomeScreenProps> = ({
   const [allBookings, setAllBookings] = useState<any[]>([]);
   const [driverName, setDriverName] = useState<string>('Driver');
   const [hasActiveTrip, setHasActiveTrip] = useState<boolean>(false);
-  const todayEarnings = 0; // Placeholder for earnings
+  const [todayEarnings, setTodayEarnings] = useState<number>(0);
+  const [weeklyEarnings, setWeeklyEarnings] = useState<number>(0);
+  const [safetyBadge, setSafetyBadge] = useState<'green' | 'yellow' | 'red'>('yellow');
   
   // Derived state
   const isOnline = driverStatus !== 'offline';
+
+  // Calculate earnings (today and weekly)
+  useEffect(() => {
+    const calculateEarnings = async () => {
+      if (driverEmail && isVerified) {
+        try {
+          const trips = await getTripsByUserId(driverEmail, 'driver');
+          const completedTrips = trips.filter((trip: any) => trip.status === 'completed');
+          
+          // Today's earnings
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const todayTrips = completedTrips.filter((trip: any) => {
+            const tripDate = new Date(trip.completedAt || trip.createdAt);
+            tripDate.setHours(0, 0, 0, 0);
+            return tripDate.getTime() === today.getTime();
+          });
+          
+          const todayTotal = todayTrips.reduce((sum: number, trip: any) => {
+            return sum + (trip.fare || 0);
+          }, 0);
+          setTodayEarnings(todayTotal);
+          
+          // Weekly earnings (last 7 days)
+          const weekAgo = new Date();
+          weekAgo.setDate(weekAgo.getDate() - 7);
+          weekAgo.setHours(0, 0, 0, 0);
+          const weeklyTrips = completedTrips.filter((trip: any) => {
+            const tripDate = new Date(trip.completedAt || trip.createdAt);
+            return tripDate >= weekAgo;
+          });
+          
+          const weeklyTotal = weeklyTrips.reduce((sum: number, trip: any) => {
+            return sum + (trip.fare || 0);
+          }, 0);
+          setWeeklyEarnings(weeklyTotal);
+        } catch (error) {
+          console.error('Error calculating earnings:', error);
+        }
+      }
+    };
+    
+    calculateEarnings();
+    
+    // Refresh earnings every 30 seconds
+    const interval = setInterval(calculateEarnings, 30000);
+    return () => clearInterval(interval);
+  }, [driverEmail, isVerified]);
+
+  // Load safety badge
+  useEffect(() => {
+    const loadSafetyBadge = async () => {
+      if (driverEmail && isVerified) {
+        try {
+          const badge = await calculateSafetyBadge(driverEmail);
+          setSafetyBadge(badge);
+        } catch (error) {
+          console.error('Error loading safety badge:', error);
+        }
+      }
+    };
+    
+    loadSafetyBadge();
+    
+    // Refresh safety badge every 5 minutes
+    const interval = setInterval(loadSafetyBadge, 300000);
+    return () => clearInterval(interval);
+  }, [driverEmail, isVerified]);
 
   // Check driver verification status on mount and load driver account
   useEffect(() => {
@@ -690,6 +761,11 @@ export const DriverHomeScreen: React.FC<DriverHomeScreenProps> = ({
                 <Ionicons name="location" size={12} color={colors.primary} />
                 <Text style={styles.locationText}>Lopez, Quezon</Text>
               </View>
+              {isVerified && (
+                <View style={styles.headerBadgeContainer}>
+                  <SafetyBadge badgeColor={safetyBadge} size="small" />
+                </View>
+              )}
             </View>
             <TouchableOpacity style={styles.notificationButton}>
               <Ionicons name="notifications-outline" size={22} color={colors.darkText} />
@@ -710,7 +786,15 @@ export const DriverHomeScreen: React.FC<DriverHomeScreenProps> = ({
 
         {/* Earnings Summary */}
         {(driverStatus === 'available' || driverStatus === 'on_ride') && (
-          <View style={styles.earningsContainer}>
+          <TouchableOpacity
+            style={styles.earningsContainer}
+            onPress={() => {
+              if (navigation) {
+                navigation.navigate('DriverEarnings');
+              }
+            }}
+            activeOpacity={0.8}
+          >
             <Card style={styles.earningsCard}>
               <View style={styles.earningsContent}>
                 <View style={styles.earningsIconContainer}>
@@ -718,11 +802,15 @@ export const DriverHomeScreen: React.FC<DriverHomeScreenProps> = ({
                 </View>
                 <View style={styles.earningsInfo}>
                   <Text style={styles.earningsLabel}>Today's Earnings</Text>
-                  <Text style={styles.earningsAmount}>₱{todayEarnings}</Text>
+                  <Text style={styles.earningsAmount}>₱{todayEarnings.toFixed(2)}</Text>
+                  <Text style={styles.earningsSubtext}>₱{weeklyEarnings.toFixed(2)} this week</Text>
+                </View>
+                <View style={styles.earningsArrow}>
+                  <Ionicons name="chevron-forward" size={20} color={colors.white} />
                 </View>
               </View>
             </Card>
-          </View>
+          </TouchableOpacity>
         )}
 
         {/* Active Bookings Section */}
@@ -938,6 +1026,9 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontWeight: '600',
   },
+  headerBadgeContainer: {
+    marginTop: spacing.xs,
+  },
   notificationButton: {
     width: 44,
     height: 44,
@@ -978,6 +1069,9 @@ const styles = StyleSheet.create({
   earningsInfo: {
     flex: 1,
   },
+  earningsArrow: {
+    opacity: 0.8,
+  },
   earningsLabel: {
     ...typography.caption,
     color: colors.gray,
@@ -989,6 +1083,18 @@ const styles = StyleSheet.create({
     color: colors.success,
     fontSize: 28,
     fontWeight: '700',
+  },
+  earningsSubtext: {
+    ...typography.caption,
+    color: colors.gray,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  badgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
   },
   bookingsContainer: {
     paddingHorizontal: spacing.lg,

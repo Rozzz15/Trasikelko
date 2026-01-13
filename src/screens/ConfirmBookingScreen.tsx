@@ -25,9 +25,13 @@ interface ConfirmBookingScreenProps {
       pickupCoordinates?: { latitude: number; longitude: number };
       dropoffCoordinates?: { latitude: number; longitude: number };
       distance: number;
-      fareEstimate: { min: number; max: number };
+      fareEstimate: { min: number; max: number; base?: number; discountAmount?: number; discountType?: 'senior' | 'pwd' | 'none' };
       eta: string;
       availableDrivers: number;
+      rideType?: 'normal' | 'errand';
+      errandNotes?: string;
+      isSeniorCitizen?: boolean;
+      isPWD?: boolean;
       selectedDriver?: {
         id: string;
         name: string;
@@ -42,7 +46,17 @@ interface ConfirmBookingScreenProps {
 }
 
 export const ConfirmBookingScreen: React.FC<ConfirmBookingScreenProps> = ({ navigation, route }) => {
-  const { pickupLocation, dropoffLocation, distance, fareEstimate, eta, availableDrivers, selectedDriver } = route.params;
+  const { 
+    pickupLocation, 
+    dropoffLocation, 
+    distance, 
+    fareEstimate, 
+    eta, 
+    availableDrivers, 
+    rideType = 'normal',
+    errandNotes,
+    selectedDriver 
+  } = route.params;
 
   const handleBookNow = async () => {
     try {
@@ -71,7 +85,9 @@ export const ConfirmBookingScreen: React.FC<ConfirmBookingScreenProps> = ({ navi
         route.params.dropoffCoordinates,
         distance,
         fareEstimate,
-        selectedDriver?.id // Pre-selected driver ID if available
+        selectedDriver?.id, // Pre-selected driver ID if available
+        rideType, // Ride type (normal or errand)
+        errandNotes // Errand notes if errand mode
       );
 
       // Navigate to searching screen
@@ -164,6 +180,19 @@ export const ConfirmBookingScreen: React.FC<ConfirmBookingScreenProps> = ({ navi
           </View>
         </Card>
 
+        {/* Ride Type Badge */}
+        {rideType === 'errand' && (
+          <Card style={styles.rideTypeBadge}>
+            <View style={styles.rideTypeBadgeContent}>
+              <Ionicons name="cube" size={20} color={colors.primary} />
+              <Text style={styles.rideTypeBadgeText}>Pasabay/Padala Mode</Text>
+            </View>
+            {errandNotes && (
+              <Text style={styles.errandNotesText}>{errandNotes}</Text>
+            )}
+          </Card>
+        )}
+
         {/* Trip Summary */}
         <Card style={styles.summaryCard}>
           <View style={styles.summaryHeader}>
@@ -179,6 +208,40 @@ export const ConfirmBookingScreen: React.FC<ConfirmBookingScreenProps> = ({ navi
             <Text style={styles.summaryLabel}>Estimated Time</Text>
             <Text style={styles.summaryValue}>{eta}</Text>
           </View>
+
+          {rideType === 'errand' && (
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Ride Type</Text>
+              <Text style={styles.summaryValue}>Pasabay/Padala (+20%)</Text>
+            </View>
+          )}
+
+          <View style={styles.summaryDivider} />
+
+          {fareEstimate.base && (
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Base Fare</Text>
+              <Text style={styles.summaryValue}>₱{fareEstimate.base}</Text>
+            </View>
+          )}
+
+          {fareEstimate.discountAmount && fareEstimate.discountAmount > 0 && (
+            <View style={styles.summaryRow}>
+              <View style={styles.discountRow}>
+                <Ionicons 
+                  name={fareEstimate.discountType === 'senior' ? 'person' : 'heart'} 
+                  size={16} 
+                  color={colors.success} 
+                />
+                <Text style={styles.summaryLabel}>
+                  {fareEstimate.discountType === 'senior' ? 'Senior Citizen' : 'PWD'} Discount (20%)
+                </Text>
+              </View>
+              <Text style={[styles.summaryValue, { color: colors.success }]}>
+                -₱{fareEstimate.discountAmount}
+              </Text>
+            </View>
+          )}
 
           <View style={styles.summaryDivider} />
 
@@ -461,6 +524,36 @@ const styles = StyleSheet.create({
   },
   bookButton: {
     paddingVertical: spacing.lg,
+  },
+  rideTypeBadge: {
+    marginBottom: spacing.md,
+    backgroundColor: '#E3F2FD',
+    borderWidth: 1,
+    borderColor: colors.primary,
+    ...shadows.medium,
+  },
+  rideTypeBadgeContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  rideTypeBadgeText: {
+    ...typography.bodyBold,
+    color: colors.primary,
+    fontSize: 14,
+  },
+  errandNotesText: {
+    ...typography.body,
+    color: colors.darkText,
+    fontSize: 13,
+    fontStyle: 'italic',
+    marginTop: spacing.xs,
+  },
+  discountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
   },
 });
 

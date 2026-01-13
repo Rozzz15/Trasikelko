@@ -10,9 +10,14 @@ export interface Trip {
   dropoffCoordinates?: { latitude: number; longitude: number };
   fare: number;
   estimatedFare?: number;
+  baseFare?: number;
+  discountAmount?: number;
+  discountType?: 'senior' | 'pwd' | 'none';
   distance?: number; // in km
   duration?: number; // in minutes
   status: 'pending' | 'searching' | 'driver_found' | 'driver_accepted' | 'arrived' | 'in_progress' | 'completed' | 'cancelled';
+  rideType?: 'normal' | 'errand'; // Normal ride or Pasabay/Padala errand
+  errandNotes?: string; // Special instructions for errand rides
   paymentMethod?: 'cash' | 'gcash';
   paymentStatus?: 'pending' | 'completed';
   passengerRating?: number;
@@ -124,8 +129,11 @@ export const setActiveTrip = async (trip: Trip | null): Promise<void> => {
 export const calculateFareEstimate = async (
   distanceKm: number,
   barangayName?: string,
-  isNightTrip: boolean = false
-): Promise<{ min: number; max: number }> => {
+  isNightTrip: boolean = false,
+  hasSeniorDiscount: boolean = false,
+  hasPWDDiscount: boolean = false,
+  isErrandMode: boolean = false
+): Promise<{ min: number; max: number; base: number; discountAmount?: number; discountType?: 'senior' | 'pwd' | 'none' }> => {
   try {
     // Try to use barangay rates first
     const { calculateFareWithBarangayRate } = require('./barangayRates');
@@ -134,7 +142,42 @@ export const calculateFareEstimate = async (
       barangayName || 'Lopez',
       isNightTrip
     );
-    return { min: fareResult.min, max: fareResult.max };
+    
+    // Calculate base fare (average of min and max)
+    const baseFare = Math.round((fareResult.min + fareResult.max) / 2);
+    
+    // Apply errand mode surcharge (20% additional for errand/padala services)
+    let finalBaseFare = baseFare;
+    if (isErrandMode) {
+      finalBaseFare = Math.round(baseFare * 1.2);
+    }
+    
+    // Apply Senior Citizen discount (20% discount)
+    let discountAmount = 0;
+    let discountType: 'senior' | 'pwd' | 'none' = 'none';
+    if (hasSeniorDiscount) {
+      discountAmount = Math.round(finalBaseFare * 0.2);
+      discountType = 'senior';
+      finalBaseFare = finalBaseFare - discountAmount;
+    } else if (hasPWDDiscount) {
+      // Apply PWD discount (20% discount, same as senior)
+      discountAmount = Math.round(finalBaseFare * 0.2);
+      discountType = 'pwd';
+      finalBaseFare = finalBaseFare - discountAmount;
+    }
+    
+    // Calculate min/max with variance (±5%)
+    const variance = 0.05;
+    const minFare = Math.round(finalBaseFare * (1 - variance));
+    const maxFare = Math.round(finalBaseFare * (1 + variance));
+    
+    return { 
+      min: Math.max(minFare, 20), // Minimum fare of ₱20
+      max: maxFare, 
+      base: finalBaseFare,
+      discountAmount: discountAmount > 0 ? discountAmount : undefined,
+      discountType: discountAmount > 0 ? discountType : undefined
+    };
   } catch (error) {
     // Fallback to default calculation if barangay rates fail
     console.error('Error calculating fare with barangay rate, using default:', error);
@@ -142,10 +185,38 @@ export const calculateFareEstimate = async (
     const perKmMin = 10;
     const perKmMax = 15;
     
-    const minFare = baseFare + (distanceKm * perKmMin);
-    const maxFare = baseFare + (distanceKm * perKmMax);
+    let minFare = baseFare + (distanceKm * perKmMin);
+    let maxFare = baseFare + (distanceKm * perKmMax);
+    let finalBaseFare = Math.round((minFare + maxFare) / 2);
     
-    return { min: Math.round(minFare), max: Math.round(maxFare) };
+    // Apply errand mode surcharge
+    if (isErrandMode) {
+      finalBaseFare = Math.round(finalBaseFare * 1.2);
+    }
+    
+    // Apply discounts
+    let discountAmount = 0;
+    let discountType: 'senior' | 'pwd' | 'none' = 'none';
+    if (hasSeniorDiscount) {
+      discountAmount = Math.round(finalBaseFare * 0.2);
+      discountType = 'senior';
+      finalBaseFare = finalBaseFare - discountAmount;
+    } else if (hasPWDDiscount) {
+      discountAmount = Math.round(finalBaseFare * 0.2);
+      discountType = 'pwd';
+      finalBaseFare = finalBaseFare - discountAmount;
+    }
+    
+    minFare = Math.round(finalBaseFare * 0.95);
+    maxFare = Math.round(finalBaseFare * 1.05);
+    
+    return { 
+      min: Math.round(Math.max(minFare, 20)), 
+      max: Math.round(maxFare),
+      base: finalBaseFare,
+      discountAmount: discountAmount > 0 ? discountAmount : undefined,
+      discountType: discountAmount > 0 ? discountType : undefined
+    };
   }
 };
 
@@ -210,10 +281,15 @@ export const createBooking = async (
   pickupCoordinates?: { latitude: number; longitude: number },
   dropoffCoordinates?: { latitude: number; longitude: number },
   distance?: number,
-  fareEstimate?: { min: number; max: number },
-  selectedDriverId?: string // Optional: if passenger selected a specific driver
+  fareEstimate?: { min: number; max: number; base?: number; discountAmount?: number; discountType?: 'senior' | 'pwd' | 'none' },
+  selectedDriverId?: string, // Optional: if passenger selected a specific driver
+  rideType?: 'normal' | 'errand',
+  errandNotes?: string
 ): Promise<Trip> => {
   try {
+    const baseFare = fareEstimate?.base || (fareEstimate ? Math.round((fareEstimate.min + fareEstimate.max) / 2) : 0);
+    const finalFare = baseFare - (fareEstimate?.discountAmount || 0);
+    
     const trip: Trip = {
       id: `booking_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       passengerId,
@@ -224,8 +300,13 @@ export const createBooking = async (
       pickupCoordinates,
       dropoffCoordinates,
       distance,
-      estimatedFare: fareEstimate ? (fareEstimate.min + fareEstimate.max) / 2 : undefined,
-      fare: fareEstimate ? Math.round((fareEstimate.min + fareEstimate.max) / 2) : 0,
+      estimatedFare: baseFare,
+      baseFare: baseFare,
+      discountAmount: fareEstimate?.discountAmount,
+      discountType: fareEstimate?.discountType || 'none',
+      fare: Math.max(finalFare, 0), // Final fare after discount
+      rideType: rideType || 'normal',
+      errandNotes: errandNotes,
       status: selectedDriverId ? 'searching' : 'searching', // Still searching even if driver pre-selected (driver needs to accept)
       driverId: selectedDriverId, // Store pre-selected driver ID
       createdAt: new Date().toISOString(),

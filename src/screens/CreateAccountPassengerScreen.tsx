@@ -164,7 +164,17 @@ export const CreateAccountPassengerScreen: React.FC<CreateAccountPassengerScreen
         setOtpCode('');
         // Set initial countdown (5 minutes = 300 seconds)
         setOtpCountdown(300);
-        Alert.alert('OTP Sent', `An OTP has been sent to ${formData.phoneNumber}. Please check your SMS.`);
+        
+        // Show alert with OTP code in development mode for testing
+        if (__DEV__ && result.devCode) {
+          Alert.alert(
+            'OTP Sent (Development Mode)', 
+            `OTP Code: ${result.devCode}\n\nAn OTP has been sent to ${formData.phoneNumber}. In development mode, you can use the code shown above for testing.`,
+            [{ text: 'OK' }]
+          );
+        } else {
+          Alert.alert('OTP Sent', `An OTP has been sent to ${formData.phoneNumber}. Please check your SMS.`);
+        }
       } else {
         Alert.alert('Error', result.message);
       }

@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system';
+import { Platform } from 'react-native';
 
 /**
  * Saves an image to a permanent location and returns the new URI
@@ -8,16 +9,25 @@ import * as FileSystem from 'expo-file-system';
  */
 export const saveImagePermanently = async (uri: string, fileName?: string): Promise<string> => {
   try {
+    // On web platform, documentDirectory and cacheDirectory may not be available
+    // In this case, return the original URI (which might be a blob URL or data URI)
+    if (Platform.OS === 'web') {
+      // Web platform: return original URI as permanent storage isn't available
+      return uri;
+    }
+    
     // Create a unique filename if not provided
     const timestamp = Date.now();
     const fileExtension = uri.split('.').pop() || 'jpg';
     const finalFileName = fileName || `profile_${timestamp}.${fileExtension}`;
     
     // Get the document directory (persistent storage)
-    // Note: In newer versions of expo-file-system, use cacheDirectory
-    const documentDirectory = (FileSystem as any).cacheDirectory || (FileSystem as any).documentDirectory;
+    // Use documentDirectory for persistent files, cacheDirectory as fallback
+    const documentDirectory = FileSystem.documentDirectory || FileSystem.cacheDirectory;
     if (!documentDirectory) {
-      throw new Error('Document directory not available');
+      // If neither directory is available, return original URI
+      console.warn('Document directory not available, returning original URI');
+      return uri;
     }
     
     // Create the destination path

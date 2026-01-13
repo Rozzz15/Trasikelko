@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, Button, RatingComponent } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import { storeTrip, setActiveTrip, Trip } from '../utils/tripStorage';
+import { updateTrip, getActiveTrip, setActiveTrip, Trip } from '../utils/tripStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface EndOfRideScreenProps {
@@ -56,34 +56,53 @@ export const EndOfRideScreen: React.FC<EndOfRideScreenProps> = ({ navigation, ro
 
     setPaymentConfirmed(true);
     
-    // Store trip in history
+    // Update existing active trip with completion and payment info
     try {
       const currentUserEmail = await AsyncStorage.getItem('current_user_email');
       if (currentUserEmail) {
-        const trip: Trip = {
-          id: `trip_${Date.now()}`,
-          passengerId: currentUserEmail,
-          driverId: `driver_${driver.name}`,
-          pickupLocation,
-          dropoffLocation,
-          fare: finalFare,
-          estimatedFare: finalFare,
-          distance,
-          duration,
-          status: 'completed',
-          paymentMethod,
-          paymentStatus: 'completed',
-          driverName: driver.name,
-          tricyclePlate: driver.tricyclePlate,
-          createdAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-        };
-        
-        await storeTrip(trip);
-        await setActiveTrip(null);
+        // Get active trip for this passenger
+        const activeTrip = await getActiveTrip(currentUserEmail, 'passenger');
+        if (activeTrip) {
+          // Update existing trip with completion data
+          await updateTrip(activeTrip.id, {
+            status: 'completed',
+            paymentMethod,
+            paymentStatus: 'completed',
+            completedAt: new Date().toISOString(),
+            distance,
+            duration,
+            fare: finalFare,
+            driverName: driver.name,
+            tricyclePlate: driver.tricyclePlate,
+          });
+        } else {
+          // Fallback: Create new trip if active trip not found (shouldn't happen)
+          console.warn('Active trip not found, creating new trip record');
+          const trip: Trip = {
+            id: `trip_${Date.now()}`,
+            passengerId: currentUserEmail,
+            driverId: `driver_${driver.name}`,
+            pickupLocation,
+            dropoffLocation,
+            fare: finalFare,
+            estimatedFare: finalFare,
+            distance,
+            duration,
+            status: 'completed',
+            paymentMethod,
+            paymentStatus: 'completed',
+            driverName: driver.name,
+            tricyclePlate: driver.tricyclePlate,
+            createdAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+          };
+          
+          const { storeTrip } = await import('../utils/tripStorage');
+          await storeTrip(trip);
+        }
       }
     } catch (error) {
-      console.error('Error storing trip:', error);
+      console.error('Error updating trip:', error);
     }
 
     // Show rating after payment confirmation
@@ -96,16 +115,58 @@ export const EndOfRideScreen: React.FC<EndOfRideScreenProps> = ({ navigation, ro
     setRating(ratingValue);
     setFeedback(feedbackText || '');
 
-    // Update trip with rating
+    // Update trip with passenger rating of driver
+    // passengerRating = rating given BY passenger TO driver
     try {
-      const trips = await AsyncStorage.getItem('trips');
-      if (trips) {
-        const tripsArray: Trip[] = JSON.parse(trips);
-        const lastTrip = tripsArray[tripsArray.length - 1];
-        if (lastTrip) {
-          lastTrip.passengerRating = ratingValue;
-          lastTrip.passengerFeedback = feedbackText;
-          await AsyncStorage.setItem('trips', JSON.stringify(tripsArray));
+      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+      if (currentUserEmail) {
+        // Get the completed trip (should be the active trip we just updated)
+        const activeTrip = await getActiveTrip(currentUserEmail, 'passenger');
+        if (activeTrip) {
+          // Update trip with passenger rating of driver
+          await updateTrip(activeTrip.id, {
+            passengerRating: ratingValue,
+            passengerFeedback: feedbackText,
+            status: 'completed',
+          });
+
+          // Recalculate driver's overall rating and trust score after rating submission
+          // This updates the driver's safety badge based on the new rating
+          try {
+            const { getDriverSafetyRecord } = await import('../utils/safetyStorage');
+            if (activeTrip.driverId) {
+              await getDriverSafetyRecord(activeTrip.driverId);
+            }
+          } catch (error) {
+            console.error('Error updating driver safety record:', error);
+          }
+
+          // Clear active trip after rating is submitted
+          await setActiveTrip(null);
+        } else {
+          // Fallback: Update last completed trip if active trip not found
+          const { getTrips } = await import('../utils/tripStorage');
+          const trips = await getTrips();
+          const lastCompletedTrip = trips
+            .filter(t => t.passengerId === currentUserEmail && t.status === 'completed')
+            .sort((a, b) => new Date(b.completedAt || b.createdAt).getTime() - new Date(a.completedAt || a.createdAt).getTime())[0];
+          
+          if (lastCompletedTrip) {
+            await updateTrip(lastCompletedTrip.id, {
+              passengerRating: ratingValue,
+              passengerFeedback: feedbackText,
+            });
+
+            // Recalculate driver's safety record
+            try {
+              const { getDriverSafetyRecord } = await import('../utils/safetyStorage');
+              if (lastCompletedTrip.driverId) {
+                await getDriverSafetyRecord(lastCompletedTrip.driverId);
+              }
+            } catch (error) {
+              console.error('Error updating driver safety record:', error);
+            }
+          }
         }
       }
     } catch (error) {

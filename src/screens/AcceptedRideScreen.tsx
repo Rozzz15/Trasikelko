@@ -15,7 +15,7 @@ import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { generateAccurateRoute, Coordinate } from '../utils/routeUtils';
-import { updateTrip } from '../utils/tripStorage';
+import { updateTrip, getTrips } from '../utils/tripStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updateDriverStatus, updateDriverLocation } from '../utils/driverLocationStorage';
 import { getUserAccount } from '../utils/userStorage';
@@ -50,11 +50,24 @@ export const AcceptedRideScreen: React.FC<AcceptedRideScreenProps> = ({ navigati
   const [driverLocation, setDriverLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [routeCoordinates, setRouteCoordinates] = useState<Coordinate[]>([]);
   const [hasArrived, setHasArrived] = useState(false);
+  const [pickupConfirmed, setPickupConfirmed] = useState(false);
   const [tripStarted, setTripStarted] = useState(false);
+  const [rideType, setRideType] = useState<'normal' | 'errand'>('normal');
+  const [errandNotes, setErrandNotes] = useState<string>('');
 
   useEffect(() => {
     const initializeMap = async () => {
       try {
+        // Get trip details to determine ride type
+        if (route.params.bookingId) {
+          const trips = await getTrips();
+          const trip = trips.find(t => t.id === route.params.bookingId);
+          if (trip) {
+            setRideType(trip.rideType || 'normal');
+            setErrandNotes(trip.errandNotes || '');
+          }
+        }
+
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === 'granted') {
           const location = await Location.getCurrentPositionAsync({
@@ -94,15 +107,57 @@ export const AcceptedRideScreen: React.FC<AcceptedRideScreenProps> = ({ navigati
     }
   }, [driverLocation, pickupCoordinates]);
 
-  const handleArrived = () => {
+  const handleArrived = async () => {
     setHasArrived(true);
+    
+    // Update trip status to 'arrived'
+    try {
+      if (route.params.bookingId) {
+        await updateTrip(route.params.bookingId, {
+          status: 'arrived',
+        });
+      }
+    } catch (error) {
+      console.error('Error updating trip status:', error);
+    }
+    
     Alert.alert('Arrived', 'You have arrived at the pickup location');
   };
 
+  const handleConfirmPickup = async () => {
+    setPickupConfirmed(true);
+    
+    // Update trip status to 'in_progress' when pickup is confirmed
+    // According to the documented flow: "Driver confirms passenger or item pickup"
+    // "The system updates the booking status to In Progress"
+    try {
+      if (route.params.bookingId) {
+        await updateTrip(route.params.bookingId, {
+          status: 'in_progress',
+          startedAt: new Date().toISOString(),
+        });
+      }
+    } catch (error) {
+      console.error('Error updating trip status:', error);
+    }
+    
+    Alert.alert(
+      rideType === 'errand' ? 'Item Pickup Confirmed' : 'Passenger Pickup Confirmed',
+      rideType === 'errand' 
+        ? 'Item/package pickup confirmed. You can now start the trip.' 
+        : 'Passenger pickup confirmed. You can now start the trip.'
+    );
+  };
+
   const handleStartTrip = async () => {
+    if (!pickupConfirmed) {
+      Alert.alert('Pickup Not Confirmed', 'Please confirm pickup before starting the trip.');
+      return;
+    }
+
     setTripStarted(true);
     
-    // Mark trip as in_progress when driver starts the trip
+    // Ensure trip status is in_progress (should already be set by confirm pickup)
     try {
       if (route.params.bookingId) {
         await updateTrip(route.params.bookingId, {
@@ -263,6 +318,13 @@ export const AcceptedRideScreen: React.FC<AcceptedRideScreenProps> = ({ navigati
           </View>
         </View>
 
+        {rideType === 'errand' && errandNotes && (
+          <View style={styles.errandInfo}>
+            <Ionicons name="cube-outline" size={16} color={colors.primary} />
+            <Text style={styles.errandInfoText}>{errandNotes}</Text>
+          </View>
+        )}
+
         {!hasArrived && (
           <Button
             title="I've Arrived"
@@ -272,7 +334,16 @@ export const AcceptedRideScreen: React.FC<AcceptedRideScreenProps> = ({ navigati
           />
         )}
 
-        {hasArrived && !tripStarted && (
+        {hasArrived && !pickupConfirmed && (
+          <Button
+            title={rideType === 'errand' ? 'Confirm Item Pickup' : 'Confirm Passenger Pickup'}
+            onPress={handleConfirmPickup}
+            variant="primary"
+            style={styles.confirmPickupButton}
+          />
+        )}
+
+        {hasArrived && pickupConfirmed && !tripStarted && (
           <Button
             title="Start Trip"
             onPress={handleStartTrip}
@@ -403,8 +474,26 @@ const styles = StyleSheet.create({
   arrivedButton: {
     marginTop: spacing.sm,
   },
+  confirmPickupButton: {
+    marginTop: spacing.sm,
+  },
   startButton: {
     marginTop: spacing.sm,
+  },
+  errandInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: '#E3F2FD',
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.md,
+  },
+  errandInfoText: {
+    ...typography.body,
+    flex: 1,
+    fontSize: 13,
+    color: colors.darkText,
   },
   driverMarker: {
     width: 40,

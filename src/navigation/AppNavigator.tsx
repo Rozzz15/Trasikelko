@@ -21,6 +21,7 @@ import {
   RideCompletedScreen,
   AdminDashboardScreen,
   ReportIssueScreen,
+  EarningsSummaryScreen,
 } from '../screens';
 import type { PassengerFormData, DriverFormData } from '../screens/CreateAccountScreen';
 
@@ -33,6 +34,7 @@ export type RootStackParamList = {
   DriverHome: undefined;
   PassengerTrips: undefined;
   DriverTrips: undefined;
+  DriverEarnings: undefined;
   PassengerProfile: undefined;
   DriverProfile: undefined;
   SOS: undefined;
@@ -380,6 +382,25 @@ export const AppNavigator: React.FC = () => {
                           props.navigation.navigate('DriverProfile');
                         } else {
                           props.navigation.navigate('DriverTrips');
+                        }
+                      }}
+                    />
+                  )}
+                </Stack.Screen>
+
+                <Stack.Screen name="DriverEarnings">
+                  {(props) => (
+                    <EarningsSummaryScreen
+                      {...props}
+                      activeTab={activeTab}
+                      onTabChange={(tab) => {
+                        setActiveTab(tab);
+                        if (tab === 'home') {
+                          props.navigation.navigate('DriverHome');
+                        } else if (tab === 'trips') {
+                          props.navigation.navigate('DriverTrips');
+                        } else if (tab === 'profile') {
+                          props.navigation.navigate('DriverProfile');
                         }
                       }}
                     />

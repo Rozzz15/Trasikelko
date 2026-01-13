@@ -22,6 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { calculateDistance, calculateFareEstimate } from '../utils/tripStorage';
 import { generateAccurateRoute, Coordinate } from '../utils/routeUtils';
 import { getFavoriteLocations, FavoriteLocation } from '../utils/favoriteLocationsStorage';
+import { getUserAccount } from '../utils/userStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface EnterDropoffScreenProps {
@@ -65,6 +66,10 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
   const [favoriteLocations, setFavoriteLocations] = useState<FavoriteLocation[]>([]);
   const [showFavoritesPicker, setShowFavoritesPicker] = useState(false);
   const [userEmail, setUserEmail] = useState<string>('');
+  const [rideType, setRideType] = useState<'normal' | 'errand'>('normal');
+  const [errandNotes, setErrandNotes] = useState('');
+  const [isSeniorCitizen, setIsSeniorCitizen] = useState(false);
+  const [isPWD, setIsPWD] = useState(false);
 
   // Listen for keyboard events
   useEffect(() => {
@@ -133,7 +138,25 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
       }
     };
 
+    // Load user account data to check for Senior/PWD status
+    const loadUserData = async () => {
+      try {
+        const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+        if (currentUserEmail) {
+          setUserEmail(currentUserEmail);
+          const userAccount = await getUserAccount(currentUserEmail);
+          if (userAccount) {
+            setIsSeniorCitizen(userAccount.isSeniorCitizen || false);
+            setIsPWD(userAccount.isPWD || false);
+          }
+        }
+      } catch (error) {
+        console.error('Error loading user data:', error);
+      }
+    };
+
     getLocation();
+    loadUserData();
   }, []);
 
   // Test function to verify direction accuracy
@@ -453,7 +476,23 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
     const currentHour = new Date().getHours();
     const isNightTrip = currentHour >= 22 || currentHour < 6;
     
-    const fare = await calculateFareEstimate(dist, 'Lopez', isNightTrip);
+    // Load user account to check Senior/PWD status
+    let hasSeniorDiscount = false;
+    let hasPWDDiscount = false;
+    try {
+      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+      if (currentUserEmail) {
+        const userAccount = await getUserAccount(currentUserEmail);
+        if (userAccount) {
+          hasSeniorDiscount = userAccount.isSeniorCitizen || false;
+          hasPWDDiscount = userAccount.isPWD || false;
+        }
+      }
+    } catch (error) {
+      console.error('Error checking user discount status:', error);
+    }
+    
+    const fare = await calculateFareEstimate(dist, 'Lopez', isNightTrip, hasSeniorDiscount, hasPWDDiscount, rideType === 'errand');
     setFareEstimate(fare);
     
     // Estimate ETA (rough calculation: 30 km/h average speed, minimum 1 minute)
@@ -601,6 +640,10 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
       fareEstimate: finalFareEstimate,
       eta,
       availableDrivers,
+      rideType,
+      errandNotes: rideType === 'errand' ? errandNotes : undefined,
+      isSeniorCitizen,
+      isPWD,
     });
   };
 
@@ -771,6 +814,84 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
               >
                 <Ionicons name="close-circle" size={18} color={colors.gray} />
               </TouchableOpacity>
+            )}
+          </View>
+        </View>
+
+        {/* Ride Type Toggle */}
+        <View style={styles.rideTypeContainer} pointerEvents="box-none">
+          <View style={styles.rideTypeCard}>
+            <Text style={styles.rideTypeLabel}>Ride Type</Text>
+            <View style={styles.rideTypeToggle}>
+              <TouchableOpacity
+                style={[
+                  styles.rideTypeButton,
+                  rideType === 'normal' && styles.rideTypeButtonActive
+                ]}
+                onPress={() => {
+                  setRideType('normal');
+                  setErrandNotes('');
+                  // Recalculate fare when ride type changes
+                  if (pickupCoordinates && dropoffCoordinates) {
+                    calculateTripDetails(pickupCoordinates, dropoffCoordinates);
+                  }
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons 
+                  name="bicycle" 
+                  size={20} 
+                  color={rideType === 'normal' ? colors.white : colors.primary} 
+                />
+                <Text style={[
+                  styles.rideTypeButtonText,
+                  rideType === 'normal' && styles.rideTypeButtonTextActive
+                ]}>
+                  Normal Ride
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.rideTypeButton,
+                  rideType === 'errand' && styles.rideTypeButtonActive
+                ]}
+                onPress={() => {
+                  setRideType('errand');
+                  // Recalculate fare when ride type changes
+                  if (pickupCoordinates && dropoffCoordinates) {
+                    calculateTripDetails(pickupCoordinates, dropoffCoordinates);
+                  }
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons 
+                  name="cube" 
+                  size={20} 
+                  color={rideType === 'errand' ? colors.white : colors.primary} 
+                />
+                <Text style={[
+                  styles.rideTypeButtonText,
+                  rideType === 'errand' && styles.rideTypeButtonTextActive
+                ]}>
+                  Pasabay/Padala
+                </Text>
+              </TouchableOpacity>
+            </View>
+            
+            {/* Errand Notes - Only show when Errand mode is selected */}
+            {rideType === 'errand' && (
+              <View style={styles.errandNotesContainer}>
+                <Text style={styles.errandNotesLabel}>Special Instructions (Optional)</Text>
+                <TextInput
+                  style={styles.errandNotesInput}
+                  placeholder="e.g., Package to be picked up, fragile items, etc."
+                  placeholderTextColor={colors.gray}
+                  value={errandNotes}
+                  onChangeText={setErrandNotes}
+                  multiline
+                  numberOfLines={3}
+                />
+              </View>
             )}
           </View>
         </View>
@@ -1416,6 +1537,85 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
     color: colors.gray,
     textAlign: 'center',
+  },
+  rideTypeContainer: {
+    position: 'absolute',
+    top: 110,
+    left: spacing.md,
+    right: spacing.md,
+    zIndex: 96,
+  },
+  rideTypeCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    ...shadows.small,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  rideTypeLabel: {
+    ...typography.caption,
+    fontSize: 12,
+    color: colors.gray,
+    fontWeight: '600',
+    marginBottom: spacing.sm,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  rideTypeToggle: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  rideTypeButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 2,
+    borderColor: colors.border,
+    backgroundColor: colors.white,
+    gap: spacing.xs,
+  },
+  rideTypeButtonActive: {
+    backgroundColor: colors.buttonPrimary,
+    borderColor: colors.buttonPrimary,
+  },
+  rideTypeButtonText: {
+    ...typography.body,
+    fontSize: 13,
+    color: colors.darkText,
+    fontWeight: '600',
+  },
+  rideTypeButtonTextActive: {
+    color: colors.white,
+  },
+  errandNotesContainer: {
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  errandNotesLabel: {
+    ...typography.caption,
+    fontSize: 12,
+    color: colors.gray,
+    fontWeight: '600',
+    marginBottom: spacing.xs,
+  },
+  errandNotesInput: {
+    ...typography.body,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    padding: spacing.sm,
+    backgroundColor: colors.white,
+    minHeight: 80,
+    textAlignVertical: 'top',
+    color: colors.darkText,
   },
 });
 

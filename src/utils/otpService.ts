@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SMS from 'expo-sms';
 
 export interface OtpData {
   code: string;
@@ -133,42 +134,58 @@ export const deleteOtp = async (phoneNumber: string): Promise<void> => {
 
 /**
  * Send OTP via SMS
- * This is a placeholder function that should be replaced with actual SMS service integration
- * Options: Twilio, Firebase Phone Auth, AWS SNS, or custom backend API
+ * Uses expo-sms for physical devices (opens SMS composer)
+ * For development/simulators, stores OTP in AsyncStorage and logs to console
+ * For production, integrate with: Twilio, Firebase Phone Auth, AWS SNS, or custom backend API
  */
-export const sendOtpSms = async (phoneNumber: string, code: string): Promise<{ success: boolean; message: string }> => {
+export const sendOtpSms = async (phoneNumber: string, code: string): Promise<{ success: boolean; message: string; devCode?: string }> => {
   try {
-    // TODO: Replace this with actual SMS service integration
-    // Example services:
-    // - Twilio: https://www.twilio.com/docs/sms
-    // - Firebase Phone Auth: https://firebase.google.com/docs/auth/web/phone-auth
-    // - AWS SNS: https://docs.aws.amazon.com/sns/latest/dg/sms_publish-to-phone.html
-    // - Custom backend API
+    const message = `Your TraysikelKO verification code is: ${code}. Valid for 5 minutes.`;
     
-    // For development/testing, you can use:
-    // - Expo's SMS API (only works on physical devices)
-    // - A mock service that logs the code
-    
-    console.log(`[OTP Service] Sending OTP ${code} to ${phoneNumber}`);
-    
-    // Uncomment below to use Expo SMS (requires physical device)
-    /*
-    import * as SMS from 'expo-sms';
-    const isAvailable = await SMS.isAvailableAsync();
-    if (isAvailable) {
-      await SMS.sendSMSAsync([phoneNumber], `Your TraysikelKO verification code is: ${code}. Valid for 5 minutes.`);
-      return { success: true, message: 'OTP sent successfully' };
+    // Try to use Expo SMS API (works on physical devices, opens SMS composer)
+    try {
+      const isAvailable = await SMS.isAvailableAsync();
+      
+      if (isAvailable) {
+        // Open SMS composer with pre-filled message
+        // Note: This opens the SMS app, user needs to manually send
+        // For automatic sending, use a backend service like Twilio
+        const result = await SMS.sendSMSAsync(
+          [phoneNumber],
+          message
+        );
+        
+        if (result.result === 'sent' || result.result === 'cancelled') {
+          // Even if cancelled, OTP is stored and can be verified
+          // Store in AsyncStorage as backup
+          await AsyncStorage.setItem(`dev_otp_${phoneNumber}`, code);
+          
+          console.log(`[OTP Service] SMS composer opened for ${phoneNumber}`);
+          return {
+            success: true,
+            message: 'SMS composer opened. Please send the message to complete verification.',
+            ...(__DEV__ ? { devCode: code } : {}), // Include code in dev mode for testing
+          };
+        }
+      }
+    } catch (smsError) {
+      // SMS API not available (simulator/emulator), fall through to dev mode
+      console.log('[OTP Service] SMS API not available, using development mode');
     }
-    */
     
-    // For development: Store in AsyncStorage for testing
-    // In production, remove this and use actual SMS service
+    // Development/Testing mode: Store in AsyncStorage and log
+    // This allows OTP verification to work in simulators/emulators
     await AsyncStorage.setItem(`dev_otp_${phoneNumber}`, code);
+    console.log(`[OTP Service] OTP generated for ${phoneNumber}: ${code}`);
+    console.log(`[OTP Service] In development mode. OTP stored in AsyncStorage for testing.`);
     
-    // Return success (in production, check actual SMS service response)
+    // Return success with dev code for testing
     return {
       success: true,
-      message: 'OTP sent successfully',
+      message: __DEV__ 
+        ? `OTP generated: ${code} (Development Mode - Check console/AsyncStorage)`
+        : 'OTP sent successfully',
+      devCode: __DEV__ ? code : undefined, // Include code in dev mode for UI display
     };
   } catch (error) {
     console.error('Error sending OTP SMS:', error);
@@ -182,7 +199,7 @@ export const sendOtpSms = async (phoneNumber: string, code: string): Promise<{ s
 /**
  * Request and send OTP to phone number
  */
-export const requestOtp = async (phoneNumber: string): Promise<{ success: boolean; message: string }> => {
+export const requestOtp = async (phoneNumber: string): Promise<{ success: boolean; message: string; devCode?: string }> => {
   try {
     // Generate OTP code
     const code = generateOtpCode();
@@ -196,7 +213,8 @@ export const requestOtp = async (phoneNumber: string): Promise<{ success: boolea
     if (smsResult.success) {
       return {
         success: true,
-        message: `OTP sent to ${phoneNumber}`,
+        message: smsResult.message || `OTP sent to ${phoneNumber}`,
+        devCode: smsResult.devCode, // Pass through dev code for development testing
       };
     } else {
       // Delete stored OTP if SMS failed
@@ -233,3 +251,20 @@ export const getOtpRemainingTime = async (phoneNumber: string): Promise<number> 
   }
 };
 
+/**
+ * Get dev OTP code from AsyncStorage (for development/testing only)
+ * This is a helper function to retrieve the OTP code stored during development mode
+ */
+export const getDevOtpCode = async (phoneNumber: string): Promise<string | null> => {
+  if (!__DEV__) {
+    return null; // Only available in development mode
+  }
+  
+  try {
+    const code = await AsyncStorage.getItem(`dev_otp_${phoneNumber}`);
+    return code;
+  } catch (error) {
+    console.error('Error getting dev OTP code:', error);
+    return null;
+  }
+};
