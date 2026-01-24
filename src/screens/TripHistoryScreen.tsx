@@ -8,6 +8,8 @@ import {
   ActivityIndicator,
   Modal,
   Dimensions,
+  Linking,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, BottomNavigation } from '../components';
@@ -49,15 +51,72 @@ export const TripHistoryScreen: React.FC<TripHistoryScreenProps> = ({
   const [showTripDetails, setShowTripDetails] = useState(false);
   const [fullTripData, setFullTripData] = useState<Map<string, any>>(new Map());
 
-  // Load real trip data from storage
+  const handleCallDriver = async (phoneNumber: string) => {
+    try {
+      const cleanedNumber = phoneNumber.replace(/[^0-9+]/g, '');
+      const phoneUrl = `tel:${cleanedNumber}`;
+      
+      const canCall = await Linking.canOpenURL(phoneUrl);
+      if (canCall) {
+        await Linking.openURL(phoneUrl);
+      } else {
+        try {
+          await Linking.openURL(phoneUrl);
+        } catch (e) {
+          Alert.alert('Cannot Make Call', `Phone number: ${cleanedNumber}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error calling driver:', error);
+      Alert.alert('Error', 'Failed to initiate call');
+    }
+  };
+
+  const handleMessageDriver = async (phoneNumber: string) => {
+    try {
+      const cleanedNumber = phoneNumber.replace(/[^0-9+]/g, '');
+      const smsUrl = `sms:${cleanedNumber}`;
+      
+      const canMessage = await Linking.canOpenURL(smsUrl);
+      if (canMessage) {
+        await Linking.openURL(smsUrl);
+      } else {
+        try {
+          await Linking.openURL(smsUrl);
+        } catch (e) {
+          Alert.alert('Cannot Send Message', `Phone number: ${cleanedNumber}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error messaging driver:', error);
+      Alert.alert('Error', 'Failed to open messaging app');
+    }
+  };
+
+  // Load real trip data from Supabase
   useEffect(() => {
     const loadTrips = async () => {
       try {
-        const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-        const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-        if (currentUserEmail) {
-          const { getTripsByUserId } = require('../utils/tripStorage');
-          const userTrips = await getTripsByUserId(currentUserEmail, userType);
+        const { getCurrentUserFromSupabase } = require('../services/userService');
+        const user = await getCurrentUserFromSupabase();
+        console.log('[TripHistory] Current user:', user?.id, 'Type:', userType);
+        
+        if (user) {
+          const { getUserTrips } = require('../services/tripService');
+          // getUserTrips works for both passengers and drivers
+          const result = await getUserTrips(user.id, userType);
+          
+          console.log('[TripHistory] getUserTrips result:', result);
+          console.log('[TripHistory] Number of trips:', result.trips?.length);
+          
+          if (!result.success || !result.trips) {
+            console.log('[TripHistory] No trips found or error');
+            setLoading(false);
+            return;
+          }
+          
+          const userTrips = result.trips;
+          console.log('[TripHistory] User trips:', userTrips);
           
           // Calculate earnings first using original trip data
           if (userType === 'driver') {
@@ -83,7 +142,7 @@ export const TripHistoryScreen: React.FC<TripHistoryScreenProps> = ({
               const fare = trip.fare || 0;
               totalTotal += fare;
               
-              const tripDate = new Date(trip.completedAt || trip.createdAt);
+              const tripDate = new Date(trip.completed_at || trip.created_at);
               const tripDateOnly = new Date(tripDate);
               tripDateOnly.setHours(0, 0, 0, 0);
               
@@ -108,13 +167,17 @@ export const TripHistoryScreen: React.FC<TripHistoryScreenProps> = ({
           const tripDataMap = new Map<string, any>();
           
           // Convert Trip format to display format
-          const formattedTrips: Trip[] = userTrips
-            .filter((trip: any) => trip.status === 'completed')
+          const completedTrips = userTrips.filter((trip: any) => trip.status === 'completed');
+          console.log('[TripHistory] Completed trips:', completedTrips.length);
+          console.log('[TripHistory] Sample trip:', completedTrips[0]);
+          
+          const formattedTrips: Trip[] = completedTrips
             .map((trip: any) => {
               // Store full trip data for detail view
               tripDataMap.set(trip.id, trip);
               
-              const tripDate = new Date(trip.completedAt || trip.createdAt);
+              // Use completed_at (underscore) not completedAt (camelCase)
+              const tripDate = new Date(trip.completed_at || trip.created_at);
               return {
                 id: trip.id,
                 date: tripDate.toLocaleDateString('en-US', { 
@@ -128,11 +191,11 @@ export const TripHistoryScreen: React.FC<TripHistoryScreenProps> = ({
                   hour12: true 
                 }),
                 dateObject: tripDate, // Store original date for filtering
-                pickup: trip.pickupLocation,
-                dropoff: trip.dropoffLocation,
+                pickup: trip.pickup_location,
+                dropoff: trip.dropoff_location,
                 fare: `₱${trip.fare || 0}`,
-                driverName: userType === 'passenger' ? trip.driverName : undefined,
-                passengerName: userType === 'driver' ? trip.passengerName : undefined,
+                driverName: userType === 'passenger' ? trip.driver_name : undefined,
+                passengerName: userType === 'driver' ? trip.passenger_name : undefined,
                 status: 'completed' as const,
               };
             })
@@ -411,8 +474,8 @@ export const TripHistoryScreen: React.FC<TripHistoryScreenProps> = ({
                         <View style={styles.detailContent}>
                           <Text style={styles.detailLabel}>Passenger Name</Text>
                           <Text style={styles.detailValue}>{selectedTrip.passengerName}</Text>
-                          {fullTrip?.passengerPhone && (
-                            <Text style={styles.detailSubvalue}>{fullTrip.passengerPhone}</Text>
+                          {fullTrip?.passenger_phone && (
+                            <Text style={styles.detailSubvalue}>{fullTrip.passenger_phone}</Text>
                           )}
                         </View>
                       </View>
@@ -426,8 +489,26 @@ export const TripHistoryScreen: React.FC<TripHistoryScreenProps> = ({
                         <View style={styles.detailContent}>
                           <Text style={styles.detailLabel}>Driver Name</Text>
                           <Text style={styles.detailValue}>{selectedTrip.driverName}</Text>
-                          {fullTrip?.driverPhone && (
-                            <Text style={styles.detailSubvalue}>{fullTrip.driverPhone}</Text>
+                          {fullTrip?.driver_phone && (
+                            <View style={styles.driverContactRow}>
+                              <Text style={styles.detailSubvalue}>{fullTrip.driver_phone}</Text>
+                              <View style={styles.tripHistoryContactButtons}>
+                                <TouchableOpacity
+                                  style={styles.tripHistoryContactButton}
+                                  onPress={() => handleCallDriver(fullTrip.driver_phone)}
+                                  activeOpacity={0.7}
+                                >
+                                  <Ionicons name="call" size={16} color={colors.white} />
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.tripHistoryContactButton}
+                                  onPress={() => handleMessageDriver(fullTrip.driver_phone)}
+                                  activeOpacity={0.7}
+                                >
+                                  <Ionicons name="chatbubble" size={16} color={colors.white} />
+                                </TouchableOpacity>
+                              </View>
+                            </View>
                           )}
                         </View>
                       </View>
@@ -449,7 +530,7 @@ export const TripHistoryScreen: React.FC<TripHistoryScreenProps> = ({
                       </View>
                     </View>
 
-                    {fullTrip?.paymentMethod && (
+                    {fullTrip?.payment_method && (
                       <View style={styles.detailRow}>
                         <View style={styles.detailIconContainer}>
                           <Ionicons name="card-outline" size={20} color={colors.primary} />
@@ -457,7 +538,7 @@ export const TripHistoryScreen: React.FC<TripHistoryScreenProps> = ({
                         <View style={styles.detailContent}>
                           <Text style={styles.detailLabel}>Payment Method</Text>
                           <Text style={styles.detailValue}>
-                            {fullTrip.paymentMethod === 'cash' ? '💵 Cash' : '📱 GCash'}
+                            {fullTrip.payment_method === 'cash' ? '💵 Cash' : '📱 GCash'}
                           </Text>
                         </View>
                       </View>
@@ -757,6 +838,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: colors.gray,
+  },
+  driverContactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  tripHistoryContactButtons: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+  tripHistoryContactButton: {
+    backgroundColor: colors.primary,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
 

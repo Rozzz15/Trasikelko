@@ -8,11 +8,11 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// AsyncStorage removed - using Supabase only
 import { Card, BottomNavigation } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import { getTripsByUserId } from '../utils/tripStorage';
+import { getUserTrips } from '../services/tripService';
 
 interface EarningsSummaryScreenProps {
   navigation?: any;
@@ -58,9 +58,11 @@ export const EarningsSummaryScreen: React.FC<EarningsSummaryScreenProps> = ({
   const loadEarnings = async () => {
     try {
       setLoading(true);
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
-        const trips = await getTripsByUserId(currentUserEmail, 'driver');
+      const { getCurrentUser } = require('../utils/sessionHelper');
+      const user = await getCurrentUser();
+      if (user && user.id) {
+        const result = await getUserTrips(user.id, 'driver');
+        const trips = result.success ? result.trips || [] : [];
         const completedTrips = trips.filter((trip: any) => trip.status === 'completed');
         
         const now = new Date();
@@ -85,7 +87,8 @@ export const EarningsSummaryScreen: React.FC<EarningsSummaryScreenProps> = ({
 
         completedTrips.forEach((trip: any) => {
           const fare = trip.fare || 0;
-          const tripDate = new Date(trip.completedAt || trip.createdAt);
+          // Use snake_case field names from Supabase database
+          const tripDate = new Date(trip.completed_at || trip.created_at);
           const tripDateOnly = new Date(tripDate);
           tripDateOnly.setHours(0, 0, 0, 0);
 
@@ -261,7 +264,7 @@ export const EarningsSummaryScreen: React.FC<EarningsSummaryScreenProps> = ({
                 <Card style={styles.breakdownCard}>
                   <View style={styles.breakdownRow}>
                     <View style={styles.breakdownLeft}>
-                      <Ionicons name="percentage-outline" size={20} color={colors.warning} />
+                      <Ionicons name="pricetag-outline" size={20} color={colors.warning} />
                       <Text style={styles.breakdownLabel}>Commission ({commissionRate}%)</Text>
                     </View>
                     <Text style={[styles.breakdownValue, styles.breakdownDeduction]}>
@@ -285,7 +288,7 @@ export const EarningsSummaryScreen: React.FC<EarningsSummaryScreenProps> = ({
                 </Card>
               )}
 
-              <Card style={[styles.breakdownCard, styles.netEarningsCard]}>
+              <Card style={styles.breakdownCard}>
                 <View style={styles.breakdownRow}>
                   <View style={styles.breakdownLeft}>
                     <Ionicons name="wallet-outline" size={20} color={colors.success} />

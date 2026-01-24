@@ -124,8 +124,8 @@ export const setActiveTrip = async (trip: Trip | null): Promise<void> => {
   }
 };
 
-// Calculate fare estimate (simple calculation based on distance)
-// Now uses barangay rates if available, falls back to default calculation
+// Calculate fare estimate using Lopez, Quezon fixed fare matrix
+// All routes are FROM Poblacion TO various barangays with fixed fares
 export const calculateFareEstimate = async (
   distanceKm: number,
   barangayName?: string,
@@ -134,88 +134,62 @@ export const calculateFareEstimate = async (
   hasPWDDiscount: boolean = false,
   isErrandMode: boolean = false
 ): Promise<{ min: number; max: number; base: number; discountAmount?: number; discountType?: 'senior' | 'pwd' | 'none' }> => {
+  console.log('[calculateFareEstimate] Input:', { barangayName, hasSeniorDiscount, hasPWDDiscount, isErrandMode });
+  
   try {
-    // Try to use barangay rates first
-    const { calculateFareWithBarangayRate } = require('./barangayRates');
-    const fareResult = await calculateFareWithBarangayRate(
-      distanceKm,
-      barangayName || 'Lopez',
-      isNightTrip
-    );
+    // Use Lopez fare table (fixed fares by barangay)
+    const { getLopezFare } = require('./lopezFares');
     
-    // Calculate base fare (average of min and max)
-    const baseFare = Math.round((fareResult.min + fareResult.max) / 2);
+    // Get the fare from Lopez fare matrix
+    const fareData = getLopezFare(barangayName || '', hasSeniorDiscount, hasPWDDiscount);
+    
+    console.log('[calculateFareEstimate] Fare data from Lopez table:', fareData);
+    
+    if (!fareData.found) {
+      console.warn('[calculateFareEstimate] Destination not found in Lopez fare table, using default minimum fare');
+    }
+    
+    // Base fare from the fare matrix (either regular or discounted)
+    let baseFare = fareData.regularFare;
+    let finalFare = fareData.fare;
+    let discountAmount = fareData.discountAmount;
+    let discountType = fareData.discountType;
     
     // Apply errand mode surcharge (20% additional for errand/padala services)
-    let finalBaseFare = baseFare;
+    // Errand surcharge applies to the REGULAR fare before discount
     if (isErrandMode) {
-      finalBaseFare = Math.round(baseFare * 1.2);
+      const errandSurcharge = Math.round(baseFare * 0.2);
+      baseFare = baseFare + errandSurcharge;
+      
+      // Recalculate final fare with discount if applicable
+      if (hasSeniorDiscount || hasPWDDiscount) {
+        // For errand with discount, use the discounted base then add proportional surcharge
+        finalFare = fareData.fare + Math.round(fareData.discountAmount * 0.2);
+        discountAmount = baseFare - finalFare;
+      } else {
+        finalFare = baseFare;
+      }
     }
     
-    // Apply Senior Citizen discount (20% discount)
-    let discountAmount = 0;
-    let discountType: 'senior' | 'pwd' | 'none' = 'none';
-    if (hasSeniorDiscount) {
-      discountAmount = Math.round(finalBaseFare * 0.2);
-      discountType = 'senior';
-      finalBaseFare = finalBaseFare - discountAmount;
-    } else if (hasPWDDiscount) {
-      // Apply PWD discount (20% discount, same as senior)
-      discountAmount = Math.round(finalBaseFare * 0.2);
-      discountType = 'pwd';
-      finalBaseFare = finalBaseFare - discountAmount;
-    }
-    
-    // Calculate min/max with variance (±5%)
-    const variance = 0.05;
-    const minFare = Math.round(finalBaseFare * (1 - variance));
-    const maxFare = Math.round(finalBaseFare * (1 + variance));
-    
+    // Return exact fares (no variance needed - these are fixed official fares)
     return { 
-      min: Math.max(minFare, 20), // Minimum fare of ₱20
-      max: maxFare, 
-      base: finalBaseFare,
+      min: finalFare,
+      max: finalFare, 
+      base: baseFare,
       discountAmount: discountAmount > 0 ? discountAmount : undefined,
-      discountType: discountAmount > 0 ? discountType : undefined
+      discountType: discountType || 'none'
     };
   } catch (error) {
-    // Fallback to default calculation if barangay rates fail
-    console.error('Error calculating fare with barangay rate, using default:', error);
-    const baseFare = 25;
-    const perKmMin = 10;
-    const perKmMax = 15;
-    
-    let minFare = baseFare + (distanceKm * perKmMin);
-    let maxFare = baseFare + (distanceKm * perKmMax);
-    let finalBaseFare = Math.round((minFare + maxFare) / 2);
-    
-    // Apply errand mode surcharge
-    if (isErrandMode) {
-      finalBaseFare = Math.round(finalBaseFare * 1.2);
-    }
-    
-    // Apply discounts
-    let discountAmount = 0;
-    let discountType: 'senior' | 'pwd' | 'none' = 'none';
-    if (hasSeniorDiscount) {
-      discountAmount = Math.round(finalBaseFare * 0.2);
-      discountType = 'senior';
-      finalBaseFare = finalBaseFare - discountAmount;
-    } else if (hasPWDDiscount) {
-      discountAmount = Math.round(finalBaseFare * 0.2);
-      discountType = 'pwd';
-      finalBaseFare = finalBaseFare - discountAmount;
-    }
-    
-    minFare = Math.round(finalBaseFare * 0.95);
-    maxFare = Math.round(finalBaseFare * 1.05);
+    // Fallback to minimum fare if Lopez fare lookup fails
+    console.error('[calculateFareEstimate] Error looking up Lopez fare, using default:', error);
+    const defaultFare = 15; // Default minimum fare for Lopez
     
     return { 
-      min: Math.round(Math.max(minFare, 20)), 
-      max: Math.round(maxFare),
-      base: finalBaseFare,
-      discountAmount: discountAmount > 0 ? discountAmount : undefined,
-      discountType: discountAmount > 0 ? discountType : undefined
+      min: defaultFare, 
+      max: defaultFare,
+      base: defaultFare,
+      discountAmount: undefined,
+      discountType: 'none'
     };
   }
 };

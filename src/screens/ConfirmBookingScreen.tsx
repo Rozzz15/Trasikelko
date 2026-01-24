@@ -12,9 +12,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, Button } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createBooking } from '../utils/tripStorage';
+// AsyncStorage removed - using Supabase only
+import { createTrip } from '../services/tripService';
 import { getUserAccount } from '../utils/userStorage';
+import { supabase } from '../config/supabase';
+import * as Location from 'expo-location';
 
 interface ConfirmBookingScreenProps {
   navigation: any;
@@ -60,35 +62,249 @@ export const ConfirmBookingScreen: React.FC<ConfirmBookingScreenProps> = ({ navi
 
   const handleBookNow = async () => {
     try {
+      console.log('[ConfirmBooking] Starting booking process...');
+      
       // Get passenger account info
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+      const { getCurrentUserEmail } = require('../utils/sessionHelper');
+      const currentUserEmail = await getCurrentUserEmail();
+      console.log('[ConfirmBooking] Current user email:', currentUserEmail);
+      
       if (!currentUserEmail) {
+        console.error('[ConfirmBooking] ❌ No user email in session');
         Alert.alert('Error', 'Please login to book a ride');
         return;
       }
 
+      console.log('[ConfirmBooking] Getting user account for:', currentUserEmail);
       const passengerAccount = await getUserAccount(currentUserEmail);
+      console.log('[ConfirmBooking] Passenger account result:', passengerAccount);
+      
       if (!passengerAccount) {
-        Alert.alert('Error', 'User account not found');
+        console.error('[ConfirmBooking] ❌ User account not found in database');
+        console.error('[ConfirmBooking] ❌ This means the user does not exist in users table');
+        Alert.alert('Error', 'User account not found. Your account may have been deleted or not properly created. Please try logging out and logging in again.');
+        return;
+      }
+      
+      console.log('[ConfirmBooking] ✅ User account found:', {
+        email: passengerAccount.email,
+        fullName: passengerAccount.fullName,
+        phoneNumber: passengerAccount.phoneNumber,
+      });
+
+      // Get user ID from Supabase
+      const { getCurrentUser } = require('../utils/sessionHelper');
+      const user = await getCurrentUser();
+      
+      if (!user || !user.id) {
+        console.error('[ConfirmBooking] ❌ User ID not found');
+        Alert.alert('Error', 'User session not found. Please login again.');
         return;
       }
 
-      // Create booking with passenger info
-      // If a driver was pre-selected, include their ID
-      const booking = await createBooking(
-        currentUserEmail,
-        passengerAccount.fullName,
-        passengerAccount.phoneNumber,
-        pickupLocation,
-        dropoffLocation,
-        route.params.pickupCoordinates,
-        route.params.dropoffCoordinates,
-        distance,
-        fareEstimate,
-        selectedDriver?.id, // Pre-selected driver ID if available
-        rideType, // Ride type (normal or errand)
-        errandNotes // Errand notes if errand mode
-      );
+      console.log('[ConfirmBooking] Creating trip in Supabase for user:', user.id);
+
+      // Reverse geocode "Current Location" to actual address
+      let actualPickupLocation = pickupLocation;
+      if (pickupLocation === 'Current Location' && route.params.pickupCoordinates) {
+        try {
+          console.log('[ConfirmBooking] Converting "Current Location" to actual address...');
+          const results = await Location.reverseGeocodeAsync({
+            latitude: route.params.pickupCoordinates.latitude,
+            longitude: route.params.pickupCoordinates.longitude,
+          });
+          
+          if (results && results.length > 0) {
+            const address = results[0];
+            const addressParts = [
+              address.street,
+              address.streetNumber,
+              address.name,
+              address.district,
+              address.city,
+              address.subregion,
+              address.region,
+            ].filter(Boolean);
+            
+            actualPickupLocation = addressParts.join(', ') || 'Current Location';
+            console.log('[ConfirmBooking] Reverse geocoded address:', actualPickupLocation);
+          }
+        } catch (error) {
+          console.error('[ConfirmBooking] Error reverse geocoding:', error);
+          // Keep "Current Location" if reverse geocoding fails
+        }
+      }
+
+      // Verify user exists in users table (required for foreign key constraint)
+      const { data: userRecord, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (userError || !userRecord) {
+        console.error('[ConfirmBooking] ❌ User not found in users table:', userError);
+        console.log('[ConfirmBooking] Attempting to auto-fix missing user record...');
+        
+        // Try to create the missing user record
+        const { createMissingUserRecord } = require('../utils/fixMissingUsers');
+        const fixResult = await createMissingUserRecord();
+        
+        if (!fixResult.success) {
+          console.error('[ConfirmBooking] ❌ Failed to fix user record:', fixResult.error);
+          Alert.alert(
+            'Account Setup Error',
+            'Your account is not properly set up in the database. Please try:\n\n1. Log out\n2. Log back in\n3. Try booking again\n\nIf this persists, please create a new account.'
+          );
+          return;
+        }
+        
+        console.log('[ConfirmBooking] ✅ User record created successfully');
+      } else {
+        console.log('[ConfirmBooking] ✅ User exists in users table');
+      }
+
+      // CHECK PROFILES TABLE - This is what the foreign key actually references!
+      console.log('[ConfirmBooking] Checking profiles table...');
+      const { data: profileRecord, error: profileError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      console.log('[ConfirmBooking] Profile record:', profileRecord);
+
+      if (profileError || !profileRecord) {
+        console.error('[ConfirmBooking] ❌ Profile record not found:', profileError);
+        console.log('[ConfirmBooking] Creating profile record...');
+        
+        const { data: newProfile, error: createProfileError } = await supabase
+          .from('profiles')
+          .insert({
+            id: user.id,
+            email: user.email,
+            full_name: passengerAccount.fullName,
+            phone_number: passengerAccount.phoneNumber,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+        
+        if (createProfileError || !newProfile) {
+          console.error('[ConfirmBooking] ❌ Failed to create profile record:', createProfileError);
+          Alert.alert('Database Error', `Failed to create profile record: ${createProfileError?.message || 'Unknown error'}`);
+          return;
+        }
+        
+        console.log('[ConfirmBooking] ✅ Profile record created:', newProfile);
+      } else {
+        console.log('[ConfirmBooking] ✅ Profile record exists');
+      }
+
+      // ALSO verify user exists in passengers table
+      const { data: passengerRecord, error: passengerError } = await supabase
+        .from('passengers')
+        .select('*')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      console.log('[ConfirmBooking] Passenger record full data:', passengerRecord);
+
+      if (passengerError || !passengerRecord) {
+        console.error('[ConfirmBooking] ❌ Passenger record not found:', passengerError);
+        console.log('[ConfirmBooking] Creating passenger record...');
+        
+        const { data: newPassenger, error: createPassengerError } = await supabase
+          .from('passengers')
+          .insert({
+            user_id: user.id,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+        
+        if (createPassengerError || !newPassenger) {
+          console.error('[ConfirmBooking] ❌ Failed to create passenger record:', createPassengerError);
+          Alert.alert('Database Error', 'Failed to create passenger record. Please contact support.');
+          return;
+        }
+        
+        console.log('[ConfirmBooking] ✅ Passenger record created:', newPassenger);
+      } else {
+        console.log('[ConfirmBooking] ✅ Passenger record exists');
+      }
+
+      // Calculate fare values
+      const baseFare = fareEstimate?.base || Math.round((fareEstimate.min + fareEstimate.max) / 2);
+      const discountAmount = fareEstimate?.discountAmount || 0;
+      const finalFare = Math.max(baseFare - discountAmount, 20); // Minimum ₱20
+
+      // Determine correct passenger_id for foreign key
+      // Check if passengers table has a separate 'id' column
+      let passengerIdForTrip = user.id; // Default to user.id
+      
+      if (passengerRecord && 'id' in passengerRecord && passengerRecord.id !== user.id) {
+        // passengers table has a separate id column (likely serial/auto-increment)
+        console.log('[ConfirmBooking] Using passengers.id instead of user.id for trip');
+        passengerIdForTrip = passengerRecord.id;
+      }
+      
+      console.log('[ConfirmBooking] passenger_id to use in trip:', passengerIdForTrip);
+
+      // Create booking in Supabase database
+      const tripData = {
+        passenger_id: passengerIdForTrip,
+        driver_id: selectedDriver?.id, // Pre-selected driver ID if available
+        pickup_location: actualPickupLocation,
+        dropoff_location: dropoffLocation,
+        pickup_latitude: route.params.pickupCoordinates?.latitude,
+        pickup_longitude: route.params.pickupCoordinates?.longitude,
+        dropoff_latitude: route.params.dropoffCoordinates?.latitude,
+        dropoff_longitude: route.params.dropoffCoordinates?.longitude,
+        distance: distance,
+        estimated_fare: baseFare,
+        base_fare: baseFare,
+        discount_amount: discountAmount,
+        discount_type: fareEstimate?.discountType || 'none',
+        fare: finalFare,
+        ride_type: rideType || 'normal',
+        errand_notes: errandNotes,
+        status: 'searching' as const,
+        payment_method: 'cash' as const,
+        payment_status: 'pending' as const,
+      };
+
+      console.log('[ConfirmBooking] Trip data:', tripData);
+
+      // Try to insert directly to get more detailed error info
+      console.log('[ConfirmBooking] Attempting direct insert to trips table...');
+      const { data: directInsert, error: directError } = await supabase
+        .from('trips')
+        .insert(tripData)
+        .select()
+        .single();
+
+      if (directError) {
+        console.error('[ConfirmBooking] ❌ Direct insert error:', directError);
+        console.error('[ConfirmBooking] ❌ Error details:', JSON.stringify(directError, null, 2));
+        console.error('[ConfirmBooking] ❌ Error hint:', directError.hint);
+        console.error('[ConfirmBooking] ❌ Error detail:', directError.details);
+        
+        // The error message should tell us what table/column the FK references
+        Alert.alert(
+          'Database Error',
+          `Failed to create trip: ${directError.message}\n\nThis is a database configuration issue. The foreign key constraint needs to be fixed in Supabase.`
+        );
+        return;
+      }
+
+      console.log('[ConfirmBooking] ✅ Trip created successfully:', directInsert.id);
+      
+      const result = { success: true, trip: directInsert };
+
+      console.log('[ConfirmBooking] ✅ Trip created successfully:', result.trip.id);
 
       // Navigate to searching screen
       navigation.navigate('SearchingDriver', {
@@ -98,7 +314,7 @@ export const ConfirmBookingScreen: React.FC<ConfirmBookingScreenProps> = ({ navi
         dropoffCoordinates: route.params.dropoffCoordinates,
         distance,
         fareEstimate,
-        bookingId: booking.id,
+        bookingId: result.trip.id,
       });
     } catch (error) {
       console.error('Error creating booking:', error);
@@ -234,7 +450,7 @@ export const ConfirmBookingScreen: React.FC<ConfirmBookingScreenProps> = ({ navi
                   color={colors.success} 
                 />
                 <Text style={styles.summaryLabel}>
-                  {fareEstimate.discountType === 'senior' ? 'Senior Citizen' : 'PWD'} Discount (20%)
+                  {fareEstimate.discountType === 'senior' ? 'Senior Citizen' : 'PWD'} Discount
                 </Text>
               </View>
               <Text style={[styles.summaryValue, { color: colors.success }]}>
@@ -246,9 +462,9 @@ export const ConfirmBookingScreen: React.FC<ConfirmBookingScreenProps> = ({ navi
           <View style={styles.summaryDivider} />
 
           <View style={styles.fareRow}>
-            <Text style={styles.fareLabel}>Estimated Fare</Text>
+            <Text style={styles.fareLabel}>Total Fare</Text>
             <Text style={styles.fareAmount}>
-              ₱{fareEstimate.min} - ₱{fareEstimate.max}
+              ₱{fareEstimate.base ? (fareEstimate.base - (fareEstimate.discountAmount || 0)) : fareEstimate.min}
             </Text>
           </View>
         </Card>

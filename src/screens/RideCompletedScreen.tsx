@@ -11,10 +11,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, Button, RatingComponent } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import { updateTrip, setActiveTrip } from '../utils/tripStorage';
-import { updateDriverStatus } from '../utils/driverLocationStorage';
-import { getDriverSafetyRecord } from '../utils/safetyStorage';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { updateTrip } from '../services/tripService';
+import { updateDriverStatus } from '../services/driverService';
+import { getDriverSafetyRecord } from '../services/safetyService';
+import { supabase } from '../config/supabase';
 
 interface RideCompletedScreenProps {
   navigation: any;
@@ -57,24 +57,38 @@ export const RideCompletedScreen: React.FC<RideCompletedScreenProps> = ({ naviga
     // Update trip with payment info and mark as completed
     try {
       if (route.params.bookingId) {
-        await updateTrip(route.params.bookingId, {
+        const result = await updateTrip(route.params.bookingId, {
           status: 'completed',
-          paymentMethod,
-          paymentStatus: 'completed',
-          completedAt: new Date().toISOString(),
+          payment_method: paymentMethod,
+          payment_status: 'completed',
+          completed_at: new Date().toISOString(),
         });
+        
+        if (!result.success) {
+          console.error('Error updating trip:', result.error);
+        }
       } else {
-        // Fallback: update last trip if bookingId not available
-        const trips = await AsyncStorage.getItem('trips');
-        if (trips) {
-          const tripsArray = JSON.parse(trips);
-          const lastTrip = tripsArray[tripsArray.length - 1];
-          if (lastTrip) {
-            lastTrip.paymentMethod = paymentMethod;
-            lastTrip.paymentStatus = 'completed';
-            lastTrip.status = 'completed';
-            lastTrip.completedAt = new Date().toISOString();
-            await AsyncStorage.setItem('trips', JSON.stringify(tripsArray));
+        // Fallback: update last trip if bookingId not available (from database)
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          const { data: trips } = await supabase
+            .from('trips')
+            .select('*')
+            .or(`passenger_id.eq.${session.user.id},driver_id.eq.${session.user.id}`)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+          
+          if (trips) {
+            await supabase
+              .from('trips')
+              .update({
+                payment_method: paymentMethod,
+                payment_status: 'paid',
+                status: 'completed',
+                completed_at: new Date().toISOString(),
+              })
+              .eq('id', trips.id);
           }
         }
       }
@@ -92,39 +106,50 @@ export const RideCompletedScreen: React.FC<RideCompletedScreenProps> = ({ naviga
     setFeedback(feedbackText || '');
 
     try {
-      // Update trip with rating
+      // Update trip with rating using rateTrip from tripService
       if (route.params.bookingId) {
-        await updateTrip(route.params.bookingId, {
-          driverRating: ratingValue,
-          driverFeedback: feedbackText,
-          status: 'completed',
-        });
+        const { rateTrip } = require('../services/tripService');
+        const result = await rateTrip(route.params.bookingId, ratingValue, feedbackText || '', 'driver');
+        
+        if (!result.success) {
+          console.error('Error rating trip:', result.error);
+        }
       } else {
-        // Fallback: update last trip if bookingId not available
-        const trips = await AsyncStorage.getItem('trips');
-        if (trips) {
-          const tripsArray = JSON.parse(trips);
-          const lastTrip = tripsArray[tripsArray.length - 1];
-          if (lastTrip) {
-            lastTrip.driverRating = ratingValue;
-            lastTrip.driverFeedback = feedbackText;
-            lastTrip.status = 'completed';
-            await AsyncStorage.setItem('trips', JSON.stringify(tripsArray));
+        // Fallback: update last trip if bookingId not available (from database)
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          const { data: trips } = await supabase
+            .from('trips')
+            .select('*')
+            .or(`passenger_id.eq.${session.user.id},driver_id.eq.${session.user.id}`)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+          
+          if (trips) {
+            await supabase
+              .from('trips')
+              .update({
+                driver_rating: ratingValue,
+                driver_review: feedbackText,
+                status: 'completed',
+              })
+              .eq('id', trips.id);
           }
         }
       }
       
-      // Clear active trip
-      await setActiveTrip(null);
+      // Active trip is automatically cleared when status changes to completed
       
       // Reset driver status to 'available' after trip completion
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
-        await updateDriverStatus(currentUserEmail, 'available');
+      const { getCurrentUser } = require('../utils/sessionHelper');
+      const currentUser = await getCurrentUser();
+      if (currentUser?.id) {
+        await updateDriverStatus(currentUser.id, 'available');
         
         // Recalculate safety badge after trip completion (rating affects badge)
         try {
-          await getDriverSafetyRecord(currentUserEmail);
+          await getDriverSafetyRecord(currentUser.id);
         } catch (error) {
           console.error('Error updating safety badge:', error);
         }
@@ -168,20 +193,25 @@ export const RideCompletedScreen: React.FC<RideCompletedScreenProps> = ({ naviga
                   {
                     text: 'Skip',
                     onPress: async () => {
-                      // Update trip status to completed and clear active trip
+                      // Update trip status to completed
                       try {
                         if (route.params.bookingId) {
-                          await updateTrip(route.params.bookingId, {
+                          const result = await updateTrip(route.params.bookingId, {
                             status: 'completed',
-                            completedAt: new Date().toISOString(),
+                            completed_at: new Date().toISOString(),
                           });
+                          
+                          if (!result.success) {
+                            console.error('Error updating trip:', result.error);
+                          }
                         }
-                        await setActiveTrip(null);
+                        // Active trip is automatically cleared when status changes to completed
                         
                         // Reset driver status to 'available' when skipping rating
-                        const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-                        if (currentUserEmail) {
-                          await updateDriverStatus(currentUserEmail, 'available');
+                        const { getCurrentUser } = require('../utils/sessionHelper');
+                        const currentUser = await getCurrentUser();
+                        if (currentUser?.id) {
+                          await updateDriverStatus(currentUser.id, 'available');
                         }
                       } catch (error) {
                         console.error('Error resetting driver status:', error);

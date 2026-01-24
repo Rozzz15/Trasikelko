@@ -15,7 +15,8 @@ import {
   Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// Using Supabase for all storage - no AsyncStorage
+import { supabase } from '../config/supabase';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { StackNavigationProp } from '@react-navigation/stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
@@ -23,8 +24,11 @@ import { Button, Input } from '../components';
 import { colors, typography, spacing, borderRadius } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { validateEmail, validateRequired } from '../utils/validation';
-import { validateLogin, getAccountType } from '../utils/userStorage';
+// OLD: import { validateLogin, getAccountType } from '../utils/userStorage';
+// NEW: Use Supabase Auth
+import { loginUser, getAccountType } from '../services/authService';
 import { getAdminEmail, validateAdminLogin } from '../utils/adminAuth';
+import { getDriverProfile } from '../services/authService';
 
 type LoginScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Login'>;
 type LoginScreenRouteProp = RouteProp<RootStackParamList, 'Login'>;
@@ -74,22 +78,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         const routeEmail = routeParams?.email;
         if (routeEmail) {
           setEmail(routeEmail);
-          // Check account type for the email
-          const accountType = await getAccountType(routeEmail);
+          // Check account type for the email (from local storage cache)
+          const accountType = await getAccountType();
           if (accountType) {
             setDetectedUserType(accountType);
           }
         } else {
-          // Otherwise load remembered email
-          const rememberedEmail = await AsyncStorage.getItem('remembered_email');
-          if (rememberedEmail) {
-            setEmail(rememberedEmail);
+          // Otherwise load remembered email from database
+          const { data: userData, error } = await supabase
+            .from('users')
+            .select('email')
+            .eq('remember_email', true)
+            .single();
+          
+          if (!error && userData) {
+            setEmail(userData.email);
             setRememberMe(true);
-            // Check account type for remembered email
-            const accountType = await getAccountType(rememberedEmail);
-            if (accountType) {
-              setDetectedUserType(accountType);
-            }
+            // Note: Account type will be fetched after login
           }
         }
       } catch (error) {
@@ -115,62 +120,74 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     return Object.keys(newErrors).length === 0;
   };
 
-  // Check account type from AsyncStorage when email changes
+  // Check account type from local storage when logged in
   useEffect(() => {
     const checkAccountType = async () => {
-      if (email && validateEmail(email)) {
-        try {
-          // Check if account type is stored locally
-          const accountType = await getAccountType(email);
-          if (accountType) {
-            setDetectedUserType(accountType);
-          } else {
-            setDetectedUserType(null);
-          }
-        } catch (error) {
-          console.error('Error checking account type:', error);
+      try {
+        // Check if user is already logged in and get account type from cache
+        const accountType = await getAccountType();
+        if (accountType) {
+          setDetectedUserType(accountType);
+        } else {
           setDetectedUserType(null);
         }
-      } else {
+      } catch (error) {
+        console.error('Error checking account type:', error);
         setDetectedUserType(null);
       }
     };
 
     checkAccountType();
-  }, [email]);
+  }, []);
 
-  // Function to validate login and determine user type
+  // Function to validate login and determine user type (UPDATED FOR SUPABASE)
   const determineUserType = async (email: string, password: string): Promise<'passenger' | 'driver'> => {
     try {
-      // Validate credentials against stored accounts
-      const validation = await validateLogin(email, password);
+      // Login with Supabase Auth
+      const result = await loginUser(email, password);
       
-      if (validation.valid && validation.account) {
-        // Check if driver account is verified
-        if (validation.account.accountType === 'driver') {
-          const verificationStatus = validation.account.verificationStatus;
-          
-          if (!verificationStatus || verificationStatus === 'pending') {
-            const error = new Error('DRIVER_PENDING');
-            // Mark as expected error to avoid logging
-            (error as any).isVerificationError = true;
-            throw error;
-          } else if (verificationStatus === 'rejected') {
-            const error = new Error('DRIVER_REJECTED');
-            (error as any).isVerificationError = true;
-            throw error;
-          } else if (verificationStatus !== 'verified') {
-            const error = new Error('DRIVER_NOT_VERIFIED');
-            (error as any).isVerificationError = true;
-            throw error;
-          }
-        }
-        
-        return validation.account.accountType;
+      if (!result.success || !result.user) {
+        throw new Error(result.error || 'Invalid email or password');
       }
       
-      // If credentials don't match, throw error
-      throw new Error('Invalid email or password');
+      // Check if driver account is verified
+      if (result.user.account_type === 'driver') {
+        console.log('[LoginScreen] User is a driver, checking verification status...');
+        
+        // Get driver-specific data to check verification status
+        const driverProfile = await getDriverProfile(result.user.id);
+        
+        if (!driverProfile) {
+          console.error('[LoginScreen] Driver profile not found for user:', result.user.id);
+          throw new Error('Driver profile not found');
+        }
+        
+        console.log('[LoginScreen] Driver profile retrieved:', driverProfile);
+        const verificationStatus = driverProfile.verification_status;
+        console.log('[LoginScreen] Verification status:', verificationStatus);
+        
+        if (verificationStatus === 'verified') {
+          console.log('[LoginScreen] ✅ Driver is VERIFIED - allowing login');
+          // Driver is verified, allow login
+        } else if (!verificationStatus || verificationStatus === 'pending') {
+          console.log('[LoginScreen] ❌ Driver is PENDING - blocking login');
+          const error = new Error('DRIVER_PENDING');
+          (error as any).isVerificationError = true;
+          throw error;
+        } else if (verificationStatus === 'rejected') {
+          console.log('[LoginScreen] ❌ Driver is REJECTED - blocking login');
+          const error = new Error('DRIVER_REJECTED');
+          (error as any).isVerificationError = true;
+          throw error;
+        } else {
+          console.log('[LoginScreen] ❌ Driver has unknown status - blocking login');
+          const error = new Error('DRIVER_NOT_VERIFIED');
+          (error as any).isVerificationError = true;
+          throw error;
+        }
+      }
+      
+      return result.user.account_type;
     } catch (error: any) {
       // Only log unexpected errors, not verification status errors
       if (!error?.isVerificationError) {
@@ -184,23 +201,43 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     if (validateForm()) {
       setIsLoading(true);
       try {
-        // Check if admin credentials are being used
-        const isValidAdmin = await validateAdminLogin(email, password);
-        if (isValidAdmin) {
-          // Reset navigation stack to admin dashboard (prevent going back to login)
-          setIsLoading(false);
-          navigation.reset({
-            index: 0,
-            routes: [{ name: 'AdminDashboard' }],
-          });
-          return;
+        // Check if admin credentials are being used (wrap in try-catch to handle missing admin table)
+        try {
+          const isValidAdmin = await validateAdminLogin(email, password);
+          if (isValidAdmin) {
+            // Reset navigation stack to admin dashboard (prevent going back to login)
+            setIsLoading(false);
+            navigation.reset({
+              index: 0,
+              routes: [{ name: 'AdminDashboard' }],
+            });
+            return;
+          }
+        } catch (adminError: any) {
+          // Silently ignore - user is not admin, continue with normal login
+          // This is expected behavior when passenger/driver logs in
         }
         
         const userType = await determineUserType(email, password);
         
-        // Store account data for "Remember me" functionality
-        if (rememberMe) {
-          await AsyncStorage.setItem('remembered_email', email);
+        // Update "Remember me" preference in database
+        try {
+          // First clear all remember_email flags
+          await supabase
+            .from('users')
+            .update({ remember_email: false })
+            .neq('email', ''); // Update all users
+          
+          // Then set the flag for current user if remember_me is checked
+          if (rememberMe) {
+            await supabase
+              .from('users')
+              .update({ remember_email: true })
+              .eq('email', email.toLowerCase());
+          }
+        } catch (error) {
+          console.error('Error updating remember_email:', error);
+          // Non-critical error, continue with login
         }
         
         onLogin(email, password, userType);
@@ -360,6 +397,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           )}
         </TouchableOpacity>
 
+        {/* Forgot Password Link */}
+        <TouchableOpacity 
+          onPress={onForgotPassword}
+          style={styles.forgotPasswordButton}
+        >
+          <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+        </TouchableOpacity>
+
         {/* Secondary Link */}
         <View style={styles.secondaryLinkContainer}>
           <Text style={styles.secondaryLinkText}>Don't have account? </Text>
@@ -516,6 +561,16 @@ const styles = StyleSheet.create({
     color: colors.white,
     fontSize: 18,
     fontWeight: '700',
+  },
+  forgotPasswordButton: {
+    alignSelf: 'center',
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  forgotPasswordText: {
+    fontSize: 14,
+    color: colors.primary,
+    fontWeight: '600',
   },
   secondaryLinkContainer: {
     flexDirection: 'row',

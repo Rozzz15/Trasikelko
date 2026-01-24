@@ -11,7 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// AsyncStorage removed - using Supabase only
 import { useNavigation } from '@react-navigation/native';
 import type { StackNavigationProp } from '@react-navigation/stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
@@ -33,6 +33,10 @@ import {
   formatPhoneNumber,
 } from '../utils/validation';
 import { requestOtp, verifyOtp, getOtpRemainingTime } from '../utils/otpService';
+import { registerUser } from '../services/authService';
+import { updateDriverData } from '../services/authService';
+import { uploadProfilePhoto, uploadDriverLicense, uploadORCR } from '../services/storageService';
+import { supabase } from '../config/supabase';
 
 interface CreateAccountScreenProps {
   onSubmit?: (data: PassengerFormData | DriverFormData, accountType: 'passenger' | 'driver') => void;
@@ -214,9 +218,136 @@ export const CreateAccountScreen: React.FC<CreateAccountScreenProps> = ({
     if (isValid) {
       setIsSubmitting(true);
       try {
-        const email = accountType === 'passenger' ? passengerData.email : driverData.email;
+        console.log('🔵 ===== SIGNUP START =====');
+        const currentData = accountType === 'passenger' ? passengerData : driverData;
+        const email = currentData.email;
+        const password = currentData.password;
+        const fullName = currentData.fullName;
+        const phoneNumber = currentData.phoneNumber;
         
-        // Create user account object
+        console.log('📝 Registering user in Supabase:', { email, accountType });
+        
+        // 1. Register user with Supabase (this will create auth user + profile via trigger)
+        const result = await registerUser(
+          email.toLowerCase(),
+          password,
+          fullName,
+          phoneNumber,
+          accountType
+        );
+        
+        if (!result.success) {
+          console.error('❌ Registration failed:', result.error);
+          Alert.alert('Registration Failed', result.error || 'Failed to create account. Please try again.');
+          setIsSubmitting(false);
+          return;
+        }
+        
+        console.log('✅ User registered successfully, userId:', result.userId);
+        const userId = result.userId!;
+        
+        // 2. Handle driver-specific data and uploads
+        if (accountType === 'driver') {
+          console.log('📸 Uploading driver documents...');
+          
+          // Upload profile photo
+          let profilePhotoUrl: string | undefined;
+          if (driverData.profilePhoto) {
+            console.log('📸 [DRIVER] Uploading profile photo...');
+            const profileUpload = await uploadProfilePhoto(userId, driverData.profilePhoto);
+            if (profileUpload.success && profileUpload.url) {
+              profilePhotoUrl = profileUpload.url;
+              console.log('✅ [DRIVER] Profile photo uploaded:', profilePhotoUrl);
+              
+              // Save to database
+              console.log('💾 [DRIVER] Saving profile photo URL to database...');
+              const { data: updateData, error: dbError } = await supabase
+                .from('users')
+                .update({ profile_photo_url: profilePhotoUrl })
+                .eq('id', userId)
+                .select();
+              
+              if (dbError) {
+                console.error('❌ [DRIVER] Failed to save profile photo to database:', dbError);
+              } else {
+                console.log('✅ [DRIVER] Profile photo URL saved to database successfully');
+                console.log('✅ [DRIVER] Updated data:', JSON.stringify(updateData, null, 2));
+              }
+            } else {
+              console.error('❌ [DRIVER] Profile photo upload failed:', profileUpload.error);
+            }
+          } else {
+            console.log('⚠️ [DRIVER] No profile photo selected');
+          }
+          
+          // Upload driver documents
+          const uploads: Promise<any>[] = [];
+          
+          if (driverData.licenseFrontPhoto) {
+            uploads.push(uploadDriverLicense(userId, driverData.licenseFrontPhoto, 'front'));
+          }
+          if (driverData.licenseBackPhoto) {
+            uploads.push(uploadDriverLicense(userId, driverData.licenseBackPhoto, 'back'));
+          }
+          if (driverData.orcrPhoto) {
+            uploads.push(uploadORCR(userId, driverData.orcrPhoto));
+          }
+          
+          const uploadResults = await Promise.all(uploads);
+          const [licenseFrontUrl, licenseBackUrl, orcrUrl] = uploadResults.map(
+            r => r.success ? r.url : undefined
+          );
+          
+          // Update driver profile with all details
+          console.log('💾 Updating driver profile data...');
+          const updateResult = await updateDriverData(userId, {
+            address: driverData.address,
+            drivers_license_number: driverData.driversLicenseNumber,
+            license_expiry_date: driverData.licenseExpiryDate,
+            license_front_photo_url: licenseFrontUrl,
+            license_back_photo_url: licenseBackUrl,
+            plate_number: driverData.plateNumber,
+            orcr_photo_url: orcrUrl,
+            vehicle_model: driverData.vehicleModel,
+            vehicle_color: driverData.vehicleColor,
+            franchise_number: driverData.franchiseNumber || undefined,
+            verification_status: 'pending',
+          });
+          
+          if (!updateResult.success) {
+            console.error('⚠️  Failed to update driver details:', updateResult.error);
+          }
+        } else {
+          // Upload passenger profile photo if provided
+          if (passengerData.profilePhoto) {
+            console.log('📸 [PASSENGER] Uploading profile photo...');
+            const uploadResult = await uploadProfilePhoto(userId, passengerData.profilePhoto);
+            if (uploadResult.success && uploadResult.url) {
+              console.log('✅ [PASSENGER] Profile photo uploaded:', uploadResult.url);
+              
+              // Save to database
+              console.log('💾 [PASSENGER] Saving profile photo URL to database...');
+              const { data: updateData, error: dbError } = await supabase
+                .from('users')
+                .update({ profile_photo_url: uploadResult.url })
+                .eq('id', userId)
+                .select();
+              
+              if (dbError) {
+                console.error('❌ [PASSENGER] Failed to save profile photo to database:', dbError);
+              } else {
+                console.log('✅ [PASSENGER] Profile photo URL saved to database successfully');
+                console.log('✅ [PASSENGER] Updated data:', JSON.stringify(updateData, null, 2));
+              }
+            } else {
+              console.error('❌ [PASSENGER] Profile photo upload failed:', uploadResult.error);
+            }
+          } else {
+            console.log('⚠️ [PASSENGER] No profile photo selected');
+          }
+        }
+        
+        // 3. Also store locally for backward compatibility
         const userAccount: UserAccount = accountType === 'passenger' 
           ? {
               email: passengerData.email,
@@ -247,21 +378,18 @@ export const CreateAccountScreen: React.FC<CreateAccountScreenProps> = ({
               submittedAt: new Date().toISOString(),
             };
         
-        // Store full user account data
-        await storeUserAccount(userAccount);
-        
-        // Store account data if "Remember me" is checked
-        if (rememberMe) {
-          await AsyncStorage.setItem('remembered_email', email);
-        }
+        // Local storage no longer used - all data in Supabase
+        await storeUserAccount(userAccount); // Keep for backward compatibility only
         
         setIsSubmitting(false);
+        console.log('✅ Account creation complete!');
+        console.log('🔵 ===== SIGNUP END (SUCCESS) =====');
         
         // Show confirmation message for driver accounts
         if (accountType === 'driver') {
           Alert.alert(
-            'Account Created Successfully',
-            'Your driver account has been created and is now pending admin approval. You will be notified once your account has been verified. You can log in after your account is approved.',
+            'Application Submitted!',
+            'Your driver account has been created and submitted for verification.\n\nWe will review your documents and notify you once approved.',
             [
               {
                 text: 'OK',
@@ -272,39 +400,27 @@ export const CreateAccountScreen: React.FC<CreateAccountScreenProps> = ({
               },
             ]
           );
-          // Don't auto-login driver - they need approval first
           return;
         }
         
-        // Call onSubmit callback to trigger navigation via handleAccountCreated
-        // This will automatically log the user in and navigate to their home screen
+        // For passengers - call onSubmit to trigger auto-login
         if (onSubmit) {
-          if (accountType === 'passenger') {
-            onSubmit(passengerData, 'passenger');
-          }
+          onSubmit(passengerData, 'passenger');
         }
         
         // Show success notification
-        if (accountType === 'passenger') {
-          Alert.alert(
-            'Account Created Successfully!',
-            'Your passenger account has been created. You are now logged in.',
-            [{ text: 'OK' }]
-          );
-        } else {
-          Alert.alert(
-            'Account Submitted',
-            'Your driver account has been created and is under review. We will notify you once approved. You are now logged in.',
-            [{ text: 'OK' }]
-          );
-        }
-      } catch (error) {
-        console.error('Error storing account type:', error);
+        Alert.alert(
+          'Account Created!',
+          'Your passenger account has been created successfully. You are now logged in!',
+          [{ text: 'OK' }]
+        );
+      } catch (error: any) {
+        console.error('❌ Error creating account:', error);
+        console.log('🔵 ===== SIGNUP END (ERROR) =====');
         setIsSubmitting(false);
         Alert.alert(
-          'Error',
-          'There was an error creating your account. Please try again.',
-          [{ text: 'OK' }]
+          'Account Creation Failed',
+          error.message || 'An error occurred while creating your account. Please try again.'
         );
       }
     } else {

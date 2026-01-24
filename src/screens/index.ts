@@ -20,6 +20,8 @@ export { AdminDashboardScreen } from './AdminDashboardScreen';
 export { AdminLoginScreen } from './AdminLoginScreen';
 export { ReportIssueScreen } from './ReportIssueScreen';
 export { EarningsSummaryScreen } from './EarningsSummaryScreen';
+export { DiscountVerificationScreen } from './DiscountVerificationScreen';
+export { ForgotPasswordScreen } from './ForgotPasswordScreen';
 
 
 

@@ -16,7 +16,7 @@ import * as Location from 'expo-location';
 import { Button, Card } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from '../config/supabase';
 
 interface SOSScreenProps {
   onBack: () => void;
@@ -127,10 +127,18 @@ export const SOSScreen: React.FC<SOSScreenProps> = ({ onBack }) => {
       Vibration.vibrate([0, 500, 200, 500]);
     }
 
-    // Get emergency contacts from storage
+    // Get emergency contacts from database
     try {
-      const emergencyContactsJson = await AsyncStorage.getItem('emergency_contacts');
-      const storedContacts = emergencyContactsJson ? JSON.parse(emergencyContactsJson) : [];
+      const { data: { session } } = await supabase.auth.getSession();
+      let storedContacts = [];
+      
+      if (session) {
+        const { data: contacts } = await supabase
+          .from('emergency_contacts')
+          .select('*')
+          .eq('user_id', session.user.id);
+        storedContacts = contacts || [];
+      }
       
       // Import barangay tanod contacts
       const { getBarangayTanodContacts } = require('../utils/barangayStorage');

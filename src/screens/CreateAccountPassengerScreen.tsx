@@ -9,7 +9,7 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// AsyncStorage removed - using Supabase only
 import {
   colors,
   typography,
@@ -24,6 +24,8 @@ import {
 } from '../utils/validation';
 import { ImagePicker } from '../components';
 import { requestOtp, verifyOtp, getOtpRemainingTime } from '../utils/otpService';
+import { registerUser } from '../services/authService';
+import { uploadProfilePhoto } from '../services/storageService';
 
 interface CreateAccountPassengerScreenProps {
   onSubmit: (data: PassengerFormData) => void;
@@ -97,17 +99,100 @@ export const CreateAccountPassengerScreen: React.FC<CreateAccountPassengerScreen
   };
 
   const handleSubmit = async () => {
+    console.log('🟢 ===== PASSENGER SUBMIT BUTTON CLICKED =====');
+    console.log('🟢 Form data:', { 
+      fullName: formData.fullName,
+      email: formData.email, 
+      phone: formData.phoneNumber,
+      phoneVerified: formData.phoneVerified,
+      termsAccepted: formData.termsAccepted
+    });
+    
     if (validateForm()) {
+      console.log('✅ Form validation PASSED');
       try {
-        // Store account type in AsyncStorage for login detection
-        await AsyncStorage.setItem(`account_type_${formData.email.toLowerCase()}`, 'passenger');
+        Alert.alert('Creating Account', 'Please wait...');
+
+        console.log('🟢 Calling registerUser...');
+        // 1. Register user with Supabase Auth
+        const result = await registerUser(
+          formData.email.toLowerCase(),
+          formData.password,
+          formData.fullName,
+          formData.phoneNumber,
+          'passenger'
+        );
         
-        onSubmit(formData);
-      } catch (error) {
-        console.error('Error storing account type:', error);
-        // Still submit even if storage fails
-        onSubmit(formData);
+        console.log('🟢 registerUser returned:', result);
+
+        if (!result.success) {
+          console.log('🔴 ===== SIGNUP FAILED =====');
+          console.log('🔴 Error:', result.error);
+          Alert.alert('Registration Failed', result.error || 'Failed to create account. Please try again.');
+          return;
+        }
+        
+        console.log('✅ Registration successful!');
+
+        // 2. Upload profile photo if provided and save to database
+        if (formData.profilePhoto && result.userId) {
+          console.log('📸 Uploading profile photo...');
+          const uploadResult = await uploadProfilePhoto(result.userId, formData.profilePhoto);
+          
+          if (uploadResult.success && uploadResult.url) {
+            console.log('✅ Profile photo uploaded:', uploadResult.url);
+            
+            // Save the URL to the database
+            const { supabase } = await import('../config/supabase');
+            console.log('💾 Saving passenger profile photo URL to database...');
+            console.log('💾 User ID:', result.userId);
+            console.log('💾 URL to save:', uploadResult.url);
+            
+            const { data: updateData, error: updateError } = await supabase
+              .from('users')
+              .update({ profile_photo_url: uploadResult.url })
+              .eq('id', result.userId)
+              .select();
+            
+            if (updateError) {
+              console.error('❌ Failed to save profile photo URL to database:', updateError);
+              console.error('❌ Error details:', JSON.stringify(updateError, null, 2));
+              Alert.alert(
+                'Warning',
+                'Profile photo uploaded but failed to save to database. You can update it later from your profile.',
+                [{ text: 'OK' }]
+              );
+            } else {
+              console.log('✅ Profile photo URL saved to database');
+              console.log('✅ Updated data:', JSON.stringify(updateData, null, 2));
+            }
+          } else {
+            console.warn('❌ Failed to upload profile photo:', uploadResult.error);
+            Alert.alert(
+              'Upload Warning',
+              `Profile photo upload failed: ${uploadResult.error}\n\nYou can add it later from your profile.`,
+              [{ text: 'OK' }]
+            );
+          }
+        } else if (!formData.profilePhoto) {
+          console.log('⚠️ No profile photo selected by user');
+        }
+
+        // 3. Success!
+        console.log('🟢 ===== SIGNUP SUCCESS =====');
+        Alert.alert(
+          'Account Created!',
+          'Your passenger account has been created successfully. You can now login.',
+          [{ text: 'OK', onPress: () => onSubmit(formData) }]
+        );
+      } catch (error: any) {
+        console.error('🔴 ===== SIGNUP ERROR =====');
+        console.error('Error creating account:', error);
+        Alert.alert('Error', error.message || 'An unexpected error occurred. Please try again.');
       }
+    } else {
+      console.log('🔴 Form validation FAILED');
+      console.log('🔴 ===== SUBMIT CANCELLED =====');
     }
   };
 
@@ -222,8 +307,20 @@ export const CreateAccountPassengerScreen: React.FC<CreateAccountPassengerScreen
   };
 
   const updateField = (field: keyof PassengerFormData, value: string | boolean) => {
+    console.log(`[CreateAccountPassenger] Field updated: ${field} = ${value}`);
+    
+    // Special logging for profile photo
+    if (field === 'profilePhoto') {
+      if (value) {
+        console.log('✅ [CreateAccountPassenger] Profile photo selected!');
+        console.log('📸 [CreateAccountPassenger] Profile photo URI:', value);
+      } else {
+        console.log('⚠️ [CreateAccountPassenger] Profile photo cleared');
+      }
+    }
+    
     // Reset phone verification when phone number changes
-    if (field === 'phoneNumber' && value !== formData.phoneNumber) {
+    if (field === 'phoneNumber' && typeof value === 'string' && value !== formData.phoneNumber) {
       setFormData((prev) => ({ ...prev, [field]: value, phoneVerified: false }));
       setShowOtpInput(false);
       setOtpCode('');

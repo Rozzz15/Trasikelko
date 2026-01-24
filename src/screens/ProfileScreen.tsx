@@ -12,14 +12,21 @@ import {
   Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Card, BottomNavigation, Button, SafetyBadge } from '../components';
 import { colors, typography, spacing, borderRadius } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePickerLib from 'expo-image-picker';
-import { getUserAccount, updateUserAccount } from '../utils/userStorage';
+import { uploadIdPhoto, requestDiscountVerification, getDiscountStatus } from '../services/discountService';
+import { supabase } from '../config/supabase';
+import { 
+  getCurrentUserFromSupabase, 
+  getPassengerFromSupabase, 
+  updateUserProfileInSupabase,
+  updatePassengerDataInSupabase 
+} from '../services/userService';
 import { saveImagePermanently } from '../utils/imageStorage';
-import { calculateSafetyBadge, getDriverSafetyRecord } from '../utils/safetyStorage';
+import { calculateSafetyBadge, getDriverSafetyRecord } from '../services/safetyService';
+import { uploadProfilePhoto } from '../services/storageService';
 
 interface ProfileScreenProps {
   userType: 'passenger' | 'driver';
@@ -52,6 +59,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [imageTitle, setImageTitle] = useState<string>('');
   const [licenseFrontPhoto, setLicenseFrontPhoto] = useState<string | undefined>(undefined);
@@ -62,6 +70,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [showChangeNameModal, setShowChangeNameModal] = useState(false);
   const [showChangePhoneModal, setShowChangePhoneModal] = useState(false);
   const [newPassword, setNewPassword] = useState('');
+  
+  // Discount verification state
+  const [discountStatus, setDiscountStatus] = useState<{
+    type: 'none' | 'senior' | 'pwd';
+    verification_status: 'none' | 'pending' | 'approved' | 'rejected';
+    id_photo_url?: string;
+    rejection_reason?: string;
+  }>({
+    type: 'none',
+    verification_status: 'none',
+  });
+  const [uploadingId, setUploadingId] = useState(false);
   const [confirmPassword, setConfirmPassword] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newName, setNewName] = useState('');
@@ -70,72 +90,85 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [safetyBadge, setSafetyBadge] = useState<'green' | 'yellow' | 'red'>('yellow');
   const [driverAccount, setDriverAccount] = useState<any>(null);
 
-  // Load user data from AsyncStorage
+  // Load user data from Supabase
   useEffect(() => {
     const loadUserData = async () => {
       try {
-        const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-        if (currentUserEmail) {
-          const userAccount = await getUserAccount(currentUserEmail);
-          if (userAccount) {
-            // Check if driver account is verified
-            if (userType === 'driver' && userAccount.accountType === 'driver') {
-              const verificationStatus = userAccount.verificationStatus || 'pending';
-              if (verificationStatus !== 'verified') {
-                // Show alert and prevent access
-                Alert.alert(
-                  verificationStatus === 'pending' 
-                    ? 'Account Under Review'
-                    : 'Account Rejected',
-                  verificationStatus === 'pending'
-                    ? 'Your driver account is currently under review. Please wait for admin approval.'
-                    : verificationStatus === 'rejected'
-                    ? userAccount.rejectionReason 
-                      ? `Your driver account has been rejected. Reason: ${userAccount.rejectionReason}`
-                      : 'Your driver account has been rejected. Please contact support.'
-                    : 'Your driver account has not been verified yet.',
-                  [{ text: 'OK' }]
-                );
-                return;
-              }
-            }
-            
+        const user = await getCurrentUserFromSupabase();
+        if (!user) {
+          Alert.alert('Error', 'Unable to load user data. Please login again.');
+          setIsLoading(false);
+          return;
+        }
+
+        // For passengers, get passenger-specific data
+        if (userType === 'passenger') {
+          const passenger = await getPassengerFromSupabase(user.id);
+          if (passenger) {
             setProfileData({
-              name: userAccount.fullName,
-              phone: userAccount.phoneNumber,
-              email: userAccount.email,
-              profilePhoto: userAccount.profilePhoto,
-              address: userAccount.address,
-              licenseNumber: userAccount.driversLicenseNumber,
-              plateNumber: userAccount.plateNumber,
-              verificationStatus: userType === 'driver' ? (userAccount.verificationStatus || 'pending') : undefined,
-              isSeniorCitizen: userAccount.isSeniorCitizen || false,
-              isPWD: userAccount.isPWD || false,
-              seniorCitizenId: userAccount.seniorCitizenId,
-              pwdId: userAccount.pwdId,
+              name: passenger.full_name,
+              phone: passenger.phone_number,
+              email: passenger.email,
+              profilePhoto: passenger.profile_photo_url,
+              address: undefined,
+              licenseNumber: undefined,
+              plateNumber: undefined,
+              verificationStatus: undefined,
+              isSeniorCitizen: passenger.is_senior_citizen || false,
+              isPWD: passenger.is_pwd || false,
+              seniorCitizenId: passenger.senior_citizen_id,
+              pwdId: passenger.pwd_id,
             });
-            
-            // Load license and ORCR photos for drivers
-            if (userType === 'driver' && userAccount.accountType === 'driver') {
-              setDriverAccount(userAccount);
-              setLicenseFrontPhoto(userAccount.licenseFrontPhoto);
-              setLicenseBackPhoto(userAccount.licenseBackPhoto);
-              setOrcrPhoto(userAccount.orcrPhoto);
-              
-              // Load safety badge for verified drivers
-              if (verificationStatus === 'verified') {
-                try {
-                  const badge = await calculateSafetyBadge(currentUserEmail);
-                  setSafetyBadge(badge);
-                } catch (error) {
-                  console.error('Error loading safety badge:', error);
-                }
-              }
+          }
+        } else {
+          // For drivers, get driver-specific data
+          const { data: driver, error } = await supabase
+            .from('drivers')
+            .select('*')
+            .eq('user_id', user.id)
+            .single();
+
+          if (error || !driver) {
+            Alert.alert('Error', 'Unable to load driver data');
+            setIsLoading(false);
+            return;
+          }
+
+          const verificationStatus = driver.verification_status || 'pending';
+          
+          setProfileData({
+            name: user.full_name,
+            phone: user.phone_number,
+            email: user.email,
+            profilePhoto: user.profile_photo_url,
+            address: driver.address,
+            licenseNumber: driver.drivers_license_number,
+            plateNumber: driver.plate_number,
+            verificationStatus: verificationStatus as 'verified' | 'pending' | 'rejected',
+            isSeniorCitizen: false,
+            isPWD: false,
+            seniorCitizenId: undefined,
+            pwdId: undefined,
+          });
+
+          setDriverAccount(driver);
+          setLicenseFrontPhoto(driver.license_front_photo_url);
+          setLicenseBackPhoto(driver.license_back_photo_url);
+          setOrcrPhoto(driver.orcr_photo_url);
+
+          // Load safety badge for verified drivers
+          if (verificationStatus === 'verified') {
+            try {
+              const badge = await calculateSafetyBadge(user.email);
+              setSafetyBadge(badge);
+            } catch (error) {
+              console.error('Error loading safety badge:', error);
             }
           }
         }
       } catch (error) {
         console.error('Error loading user data:', error);
+        Alert.alert('Error', 'Failed to load profile data');
       } finally {
         setIsLoading(false);
       }
@@ -153,46 +186,42 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
-        await updateUserAccount(currentUserEmail, {
-          fullName: profileData.name,
-          phoneNumber: profileData.phone,
-          profilePhoto: profileData.profilePhoto,
-          ...(userType === 'passenger' && {
-            isSeniorCitizen: profileData.isSeniorCitizen,
-            isPWD: profileData.isPWD,
-            seniorCitizenId: profileData.seniorCitizenId,
-            pwdId: profileData.pwdId,
-          }),
-          ...(userType === 'driver' && {
-            address: profileData.address,
-            driversLicenseNumber: profileData.licenseNumber,
-            plateNumber: profileData.plateNumber,
-          }),
-        });
-        Alert.alert('Success', 'Profile updated successfully', [
-          {
-            text: 'OK',
-            onPress: () => {
-              // Reload user data to ensure profile photo is displayed
-              const reloadData = async () => {
-                const userAccount = await getUserAccount(currentUserEmail);
-                if (userAccount) {
-                  setProfileData((prev) => ({
-                    ...prev,
-                    profilePhoto: userAccount.profilePhoto,
-                  }));
-                }
-              };
-              reloadData();
-            },
-          },
-        ]);
+      const user = await getCurrentUserFromSupabase();
+      if (!user) {
+        Alert.alert('Error', 'Unable to save. Please login again.');
+        setIsSaving(false);
+        return;
       }
-    } catch (error) {
+
+      // Update user profile
+      const result = await updateUserProfileInSupabase(user.id, {
+        full_name: profileData.name,
+        phone_number: profileData.phone,
+        profile_photo_url: profileData.profilePhoto,
+      });
+
+      if (!result.success) {
+        throw new Error(result.error);
+      }
+
+      // Update passenger-specific data if passenger
+      if (userType === 'passenger') {
+        const passengerResult = await updatePassengerDataInSupabase(user.id, {
+          is_senior_citizen: profileData.isSeniorCitizen,
+          is_pwd: profileData.isPWD,
+          senior_citizen_id: profileData.seniorCitizenId,
+          pwd_id: profileData.pwdId,
+        });
+
+        if (!passengerResult.success) {
+          throw new Error(passengerResult.error);
+        }
+      }
+
+      Alert.alert('Success', 'Profile updated successfully');
+    } catch (error: any) {
       console.error('Error saving profile:', error);
-      Alert.alert('Error', 'Failed to save profile. Please try again.');
+      Alert.alert('Error', error.message || 'Failed to save profile. Please try again.');
     } finally {
       setIsSaving(false);
     }
@@ -226,11 +255,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       Alert.alert('Error', 'Password must be at least 6 characters');
       return;
     }
-    // TODO: Implement password change logic
-    Alert.alert('Success', 'Password changed successfully');
-    setShowChangePasswordModal(false);
-    setNewPassword('');
-    setConfirmPassword('');
+    
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword
+      });
+      
+      if (error) throw error;
+      
+      Alert.alert('Success', 'Password changed successfully');
+      setShowChangePasswordModal(false);
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to change password');
+    }
   };
 
   const handleChangeEmail = async () => {
@@ -244,20 +283,23 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       return;
     }
     try {
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
-        await updateUserAccount(currentUserEmail, { email: newEmail });
-        Alert.alert('Success', 'Email updated successfully');
-        setShowChangeEmailModal(false);
-        setNewEmail('');
-        // Reload user data
-        const userAccount = await getUserAccount(newEmail);
-        if (userAccount) {
-          setProfileData(prev => ({ ...prev, email: newEmail }));
-        }
+      const user = await getCurrentUserFromSupabase();
+      if (!user) {
+        Alert.alert('Error', 'Unable to update. Please login again.');
+        return;
       }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to update email');
+
+      // Update email in Supabase Auth
+      const { error } = await supabase.auth.updateUser({ email: newEmail });
+      
+      if (error) throw error;
+
+      Alert.alert('Success', 'Email updated successfully. Please check your inbox to confirm.');
+      setShowChangeEmailModal(false);
+      setNewEmail('');
+      setProfileData(prev => ({ ...prev, email: newEmail }));
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to update email');
     }
   };
 
@@ -267,16 +309,24 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       return;
     }
     try {
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
-        await updateUserAccount(currentUserEmail, { fullName: newName.trim() });
-        Alert.alert('Success', 'Name updated successfully');
-        setShowChangeNameModal(false);
-        setNewName('');
-        setProfileData(prev => ({ ...prev, name: newName.trim() }));
+      const user = await getCurrentUserFromSupabase();
+      if (!user) {
+        Alert.alert('Error', 'Unable to update. Please login again.');
+        return;
       }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to update name');
+
+      const result = await updateUserProfileInSupabase(user.id, {
+        full_name: newName.trim(),
+      });
+
+      if (!result.success) throw new Error(result.error);
+
+      Alert.alert('Success', 'Name updated successfully');
+      setShowChangeNameModal(false);
+      setNewName('');
+      setProfileData(prev => ({ ...prev, name: newName.trim() }));
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to update name');
     }
   };
 
@@ -286,16 +336,24 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       return;
     }
     try {
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
-        await updateUserAccount(currentUserEmail, { phoneNumber: newPhone.trim() });
-        Alert.alert('Success', 'Phone number updated successfully');
-        setShowChangePhoneModal(false);
-        setNewPhone('');
-        setProfileData(prev => ({ ...prev, phone: newPhone.trim() }));
+      const user = await getCurrentUserFromSupabase();
+      if (!user) {
+        Alert.alert('Error', 'Unable to update. Please login again.');
+        return;
       }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to update phone number');
+
+      const result = await updateUserProfileInSupabase(user.id, {
+        phone_number: newPhone.trim(),
+      });
+
+      if (!result.success) throw new Error(result.error);
+
+      Alert.alert('Success', 'Phone number updated successfully');
+      setShowChangePhoneModal(false);
+      setNewPhone('');
+      setProfileData(prev => ({ ...prev, phone: newPhone.trim() }));
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to update phone number');
     }
   };
 
@@ -325,8 +383,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </View>
             )}
             <TouchableOpacity
-              style={styles.editAvatarButton}
+              style={[styles.editAvatarButton, isUploadingPhoto && { opacity: 0.5 }]}
+              disabled={isUploadingPhoto}
               onPress={() => {
+                if (isUploadingPhoto) {
+                  Alert.alert('Please Wait', 'Photo upload in progress...');
+                  return;
+                }
                 // Show image picker options
                 Alert.alert(
                   'Change Profile Photo',
@@ -343,13 +406,45 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                             quality: 0.8,
                           });
                           if (!result.canceled && result.assets[0]) {
-                            await handlePhotoSelect(result.assets[0].uri);
-                            // Save immediately
-                            const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-                            if (currentUserEmail) {
-                              await updateUserAccount(currentUserEmail, {
-                                profilePhoto: result.assets[0].uri,
-                              });
+                            try {
+                              setIsUploadingPhoto(true);
+                              Alert.alert('Uploading', 'Uploading photo to cloud storage...');
+                              
+                              // Get current user session
+                              const { data: { session } } = await supabase.auth.getSession();
+                              if (!session) {
+                                Alert.alert('Error', 'Please log in again');
+                                return;
+                              }
+                              
+                              // Upload to Supabase Storage
+                              const uploadResult = await uploadProfilePhoto(
+                                session.user.id,
+                                result.assets[0].uri
+                              );
+                              
+                              if (uploadResult.success && uploadResult.url) {
+                                // Save public URL to database
+                                const { error: updateError } = await supabase
+                                  .from('users')
+                                  .update({ profile_photo_url: uploadResult.url })
+                                  .eq('id', session.user.id);
+                                
+                                if (updateError) {
+                                  throw new Error(updateError.message);
+                                }
+                                
+                                // Update local state with cloud URL
+                                setProfileData((prev) => ({ ...prev, profilePhoto: uploadResult.url }));
+                                Alert.alert('Success', 'Profile photo updated successfully!');
+                              } else {
+                                throw new Error(uploadResult.error || 'Upload failed');
+                              }
+                            } catch (error: any) {
+                              console.error('Error uploading profile photo:', error);
+                              Alert.alert('Upload Failed', error.message || 'Failed to upload photo. Please try again.');
+                            } finally {
+                              setIsUploadingPhoto(false);
                             }
                           }
                         } else {
@@ -368,13 +463,45 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                             quality: 0.8,
                           });
                           if (!result.canceled && result.assets[0]) {
-                            await handlePhotoSelect(result.assets[0].uri);
-                            // Save immediately
-                            const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-                            if (currentUserEmail) {
-                              await updateUserAccount(currentUserEmail, {
-                                profilePhoto: result.assets[0].uri,
-                              });
+                            try {
+                              setIsUploadingPhoto(true);
+                              Alert.alert('Uploading', 'Uploading photo to cloud storage...');
+                              
+                              // Get current user session
+                              const { data: { session } } = await supabase.auth.getSession();
+                              if (!session) {
+                                Alert.alert('Error', 'Please log in again');
+                                return;
+                              }
+                              
+                              // Upload to Supabase Storage
+                              const uploadResult = await uploadProfilePhoto(
+                                session.user.id,
+                                result.assets[0].uri
+                              );
+                              
+                              if (uploadResult.success && uploadResult.url) {
+                                // Save public URL to database
+                                const { error: updateError } = await supabase
+                                  .from('users')
+                                  .update({ profile_photo_url: uploadResult.url })
+                                  .eq('id', session.user.id);
+                                
+                                if (updateError) {
+                                  throw new Error(updateError.message);
+                                }
+                                
+                                // Update local state with cloud URL
+                                setProfileData((prev) => ({ ...prev, profilePhoto: uploadResult.url }));
+                                Alert.alert('Success', 'Profile photo updated successfully!');
+                              } else {
+                                throw new Error(uploadResult.error || 'Upload failed');
+                              }
+                            } catch (error: any) {
+                              console.error('Error uploading profile photo:', error);
+                              Alert.alert('Upload Failed', error.message || 'Failed to upload photo. Please try again.');
+                            } finally {
+                              setIsUploadingPhoto(false);
                             }
                           }
                         } else {
@@ -521,98 +648,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </View>
             )}
 
-            {/* Passenger-specific: Senior Citizen / PWD Settings */}
-            {userType === 'passenger' && (
-              <>
-                <Text style={styles.subsectionTitle}>Discount Eligibility</Text>
-                
-                <TouchableOpacity
-                  style={styles.settingsItem}
-                  onPress={async () => {
-                    const newValue = !profileData.isSeniorCitizen;
-                    const updatedData = {
-                      ...profileData,
-                      isSeniorCitizen: newValue,
-                      // If enabling Senior, disable PWD (can only have one discount)
-                      isPWD: newValue ? false : profileData.isPWD,
-                    };
-                    setProfileData(updatedData);
-                    
-                    // Save immediately
-                    try {
-                      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-                      if (currentUserEmail) {
-                        await updateUserAccount(currentUserEmail, {
-                          isSeniorCitizen: updatedData.isSeniorCitizen,
-                          isPWD: updatedData.isPWD,
-                        });
-                        Alert.alert('Success', newValue ? 'Senior Citizen discount enabled (20% off)' : 'Senior Citizen discount disabled');
-                      }
-                    } catch (error) {
-                      Alert.alert('Error', 'Failed to update discount status');
-                    }
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.settingsItemLeft}>
-                    <Ionicons 
-                      name={profileData.isSeniorCitizen ? "checkmark-circle" : "ellipse-outline"} 
-                      size={20} 
-                      color={profileData.isSeniorCitizen ? colors.success : colors.gray} 
-                    />
-                    <View style={styles.settingsItemContent}>
-                      <Text style={styles.settingsItemLabel}>Senior Citizen</Text>
-                      <Text style={styles.settingsItemValue}>
-                        {profileData.isSeniorCitizen ? 'Eligible for 20% discount' : 'Not registered'}
-                      </Text>
-                    </View>
-                  </View>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.settingsItem}
-                  onPress={async () => {
-                    const newValue = !profileData.isPWD;
-                    const updatedData = {
-                      ...profileData,
-                      isPWD: newValue,
-                      // If enabling PWD, disable Senior (can only have one discount)
-                      isSeniorCitizen: newValue ? false : profileData.isSeniorCitizen,
-                    };
-                    setProfileData(updatedData);
-                    
-                    // Save immediately
-                    try {
-                      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-                      if (currentUserEmail) {
-                        await updateUserAccount(currentUserEmail, {
-                          isSeniorCitizen: updatedData.isSeniorCitizen,
-                          isPWD: updatedData.isPWD,
-                        });
-                        Alert.alert('Success', newValue ? 'PWD discount enabled (20% off)' : 'PWD discount disabled');
-                      }
-                    } catch (error) {
-                      Alert.alert('Error', 'Failed to update discount status');
-                    }
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.settingsItemLeft}>
-                    <Ionicons 
-                      name={profileData.isPWD ? "checkmark-circle" : "ellipse-outline"} 
-                      size={20} 
-                      color={profileData.isPWD ? colors.success : colors.gray} 
-                    />
-                    <View style={styles.settingsItemContent}>
-                      <Text style={styles.settingsItemLabel}>Person with Disability (PWD)</Text>
-                      <Text style={styles.settingsItemValue}>
-                        {profileData.isPWD ? 'Eligible for 20% discount' : 'Not registered'}
-                      </Text>
-                    </View>
-                  </View>
-                </TouchableOpacity>
-              </>
-            )}
             </View>
           )}
         </Card>
@@ -864,7 +899,26 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 {
                   text: 'Logout',
                   style: 'destructive',
-                  onPress: onLogout,
+                  onPress: async () => {
+                    // If driver, set status to offline before logout
+                    if (userType === 'driver') {
+                      try {
+                        console.log('[ProfileScreen] Driver logging out - setting status to offline...');
+                        const { getCurrentUser } = require('../utils/sessionHelper');
+                        const user = await getCurrentUser();
+                        if (user?.id) {
+                          const { updateDriverStatus, removeDriverLocation } = require('../services/driverService');
+                          await updateDriverStatus(user.id, 'offline');
+                          await removeDriverLocation(user.id);
+                          console.log('[ProfileScreen] Driver status set to offline');
+                        }
+                      } catch (error) {
+                        console.error('[ProfileScreen] Error setting driver offline:', error);
+                      }
+                    }
+                    // Call the actual logout
+                    onLogout();
+                  },
                 },
               ]
             );

@@ -11,3 +11,5 @@ export { CustomImagePicker as ImagePicker } from './ImagePicker';
 export { RatingComponent } from './RatingComponent';
 export { DatePicker } from './DatePicker';
 export { SafetyBadge } from './SafetyBadge';
+export { BarangaySelector } from './BarangaySelector';
+export { LoadingScreen } from './LoadingScreen';

@@ -1,0 +1,69 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║            TraysikelKO - Quick Deployment Commands                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+STEP 1: RESET DATABASE & STORAGE (Supabase Dashboard)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Open: https://app.supabase.com
+2. Go to SQL Editor
+3. Run RESET_DATABASE.sql (in your project folder)
+4. Go to Storage → Delete all files from buckets
+5. Go to Authentication → Users → Delete all users
+
+STEP 2: CLEAR LOCAL CACHE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+npx expo start --clear
+
+(Wait for Metro to start, then press Ctrl+C to stop)
+
+STEP 3: BUILD PRODUCTION APK (NOT AAB!)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+eas build --platform android --profile production --clear-cache
+
+⚠️ IMPORTANT: This now builds APK (not AAB) - installable on devices!
+(Build takes 10-20 minutes, monitor on EAS dashboard)
+
+STEP 4: DOWNLOAD & INSTALL APK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Download APK from EAS build completion email/dashboard
+   ✅ File should be: app-XXXXX.apk (NOT .aab!)
+2. Transfer to Android device via USB/cloud/email
+3. Install APK (enable "Install from unknown sources" if needed)
+4. Open TraysikelKO app
+5. Test registration and features
+
+STEP 5: VERIFY EVERYTHING WORKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ App opens without crash
+✓ Can create passenger account
+✓ Can create driver account  
+✓ Profile photos upload
+✓ Maps load
+✓ Navigation works
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TROUBLESHOOTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+If build fails:
+  eas build:list              # Check build status
+  eas build:cancel            # Cancel stuck build
+
+If app crashes:
+  Check babel.config.js has: 'react-native-reanimated/plugin'
+
+If photos don't upload:
+  Check Supabase Storage buckets exist
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DOCUMENTATION REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PRE_DEPLOYMENT_CHECKLIST.md  - Complete step-by-step guide
+RESET_DATABASE.sql            - Database cleanup script
+RESET_STORAGE.md              - Storage cleanup instructions
+FINAL_DEPLOYMENT_SUMMARY.md   - All fixes and changes summary
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Ready to deploy! 🚀

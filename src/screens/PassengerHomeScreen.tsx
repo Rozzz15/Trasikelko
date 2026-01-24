@@ -20,15 +20,8 @@ import * as Location from 'expo-location';
 import { BottomNavigation, Button, Card, SafetyBadge } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getUserAccount } from '../utils/userStorage';
-import { createBooking } from '../utils/tripStorage';
-import { 
-  getFavoriteLocations, 
-  addFavoriteLocation, 
-  deleteFavoriteLocation,
-  FavoriteLocation 
-} from '../utils/favoriteLocationsStorage';
+import { supabase } from '../config/supabase';
+import { getCurrentUserFromSupabase, getPassengerFromSupabase } from '../services/userService';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -58,16 +51,25 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [showFavoritesModal, setShowFavoritesModal] = useState(false);
   const [showAddFavoriteModal, setShowAddFavoriteModal] = useState(false);
-  const [favoriteLocations, setFavoriteLocations] = useState<FavoriteLocation[]>([]);
-  const [userEmail, setUserEmail] = useState<string>('');
+  const [favoriteLocations, setFavoriteLocations] = useState<any[]>([]);
+  const [userId, setUserId] = useState<string>('');
   const [newFavoriteName, setNewFavoriteName] = useState('');
   const [newFavoriteAddress, setNewFavoriteAddress] = useState('');
   const [newFavoriteCoordinates, setNewFavoriteCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [newFavoriteIcon, setNewFavoriteIcon] = useState<FavoriteLocation['icon']>('location');
+  const [newFavoriteIcon, setNewFavoriteIcon] = useState<'home' | 'briefcase' | 'school' | 'location' | 'heart' | 'star'>('location');
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [mapPickerRegion, setMapPickerRegion] = useState<Region | null>(null);
   const favoriteMapRef = useRef<MapView>(null);
   const mapRef = useRef<MapView>(null);
+  
+  // Activity stats
+  const [totalRides, setTotalRides] = useState(0);
+  const [totalSpent, setTotalSpent] = useState(0);
+  const [averageRating, setAverageRating] = useState<number | null>(null);
+  const [recentTrips, setRecentTrips] = useState<any[]>([]);
+  
+  // Active booking state
+  const [activeBooking, setActiveBooking] = useState<any>(null);
 
   const tabs = [
     { name: 'home', label: 'Home', icon: 'home-outline' as const, activeIcon: 'home' as const },
@@ -75,42 +77,126 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
     { name: 'profile', label: 'Profile', icon: 'person-outline' as const, activeIcon: 'person' as const },
   ];
 
-  // Load user name, email, and favorites
+  // Load user name, favorites, and activity stats from Supabase
   React.useEffect(() => {
     const loadUserData = async () => {
       try {
-        const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-        if (currentUserEmail) {
-          setUserEmail(currentUserEmail);
-          const userAccount = await getUserAccount(currentUserEmail);
-          if (userAccount) {
-            setUserName(userAccount.fullName.split(' ')[0] || 'Passenger');
+        const user = await getCurrentUserFromSupabase();
+        if (user) {
+          setUserId(user.id);
+          setUserName(user.full_name.split(' ')[0] || 'Passenger');
+          
+          // Load favorite locations from Supabase
+          const { data: favorites, error } = await supabase
+            .from('favorite_locations')
+            .select('*')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false });
+          
+          if (!error && favorites) {
+            setFavoriteLocations(favorites);
           }
-          // Load favorite locations
-          const favorites = await getFavoriteLocations(currentUserEmail);
-          setFavoriteLocations(favorites);
+          
+          // Load activity stats
+          await loadActivityStats(user.id);
+          
+          // Load active booking
+          await loadActiveBooking(user.id);
         }
       } catch (error) {
         console.error('Error loading user data:', error);
       }
     };
     loadUserData();
-  }, []);
+    
+    // Poll for active booking updates every 3 seconds
+    const interval = setInterval(() => {
+      if (userId) {
+        loadActiveBooking(userId);
+      }
+    }, 3000);
+    
+    return () => clearInterval(interval);
+  }, [userId]);
+
+  const loadActivityStats = async (passengerId: string) => {
+    try {
+      // Get completed trips
+      const { data: trips, error } = await supabase
+        .from('trips')
+        .select('*')
+        .eq('passenger_id', passengerId)
+        .eq('status', 'completed')
+        .order('created_at', { ascending: false });
+
+      if (!error && trips) {
+        setTotalRides(trips.length);
+        
+        // Calculate total spent
+        const spent = trips.reduce((sum, trip) => sum + (trip.fare || 0), 0);
+        setTotalSpent(spent);
+        
+        // Calculate average rating (driver's rating of THIS passenger)
+        const ratedTrips = trips.filter(trip => trip.driver_rating);
+        if (ratedTrips.length > 0) {
+          const avgRating = ratedTrips.reduce((sum, trip) => sum + trip.driver_rating, 0) / ratedTrips.length;
+          setAverageRating(avgRating);
+        } else {
+          setAverageRating(null); // No ratings yet
+        }
+        
+        // Get recent 3 trips
+        setRecentTrips(trips.slice(0, 3));
+      }
+    } catch (error) {
+      console.error('Error loading activity stats:', error);
+    }
+  };
+
+  const loadActiveBooking = async (passengerId: string) => {
+    try {
+      // Get active booking (searching, driver_accepted, arrived, or in_progress)
+      const { data: activeTrip, error } = await supabase
+        .from('trips')
+        .select('*')
+        .eq('passenger_id', passengerId)
+        .in('status', ['searching', 'driver_accepted', 'arrived', 'in_progress'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!error && activeTrip) {
+        setActiveBooking(activeTrip);
+      } else {
+        setActiveBooking(null);
+      }
+    } catch (error) {
+      console.error('Error loading active booking:', error);
+      setActiveBooking(null);
+    }
+  };
 
   // Reload favorites when modal opens
   React.useEffect(() => {
-    if (showFavoritesModal && userEmail) {
+    if (showFavoritesModal && userId) {
       const loadFavorites = async () => {
         try {
-          const favorites = await getFavoriteLocations(userEmail);
-          setFavoriteLocations(favorites);
+          const { data: favorites, error } = await supabase
+            .from('favorite_locations')
+            .select('*')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false });
+          
+          if (!error && favorites) {
+            setFavoriteLocations(favorites);
+          }
         } catch (error) {
           console.error('Error loading favorites:', error);
         }
       };
       loadFavorites();
     }
-  }, [showFavoritesModal, userEmail]);
+  }, [showFavoritesModal, userId]);
 
   // Get user's current location
   useEffect(() => {
@@ -216,9 +302,10 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
   // All passenger accounts are connected to all driver accounts
   const loadNearbyDrivers = React.useCallback(async () => {
     try {
-      const { getOnlineDriverLocations, calculateDistance } = require('../utils/driverLocationStorage');
+      const { getOnlineDrivers } = require('../services/driverService');
+      const { calculateDistance } = require('../services/tripService');
       // Get all online drivers - shows all available drivers from all driver accounts
-      const onlineDrivers = await getOnlineDriverLocations();
+      const onlineDrivers = await getOnlineDrivers();
       
       if (userCoordinates && onlineDrivers.length > 0) {
         // Filter out drivers with invalid coordinates only
@@ -229,7 +316,7 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
           driver.longitude && 
           !isNaN(driver.latitude) && 
           !isNaN(driver.longitude) &&
-          driver.isOnline === true
+          driver.is_online === true
         );
         
         if (validDrivers.length === 0) {
@@ -253,25 +340,27 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
             // Get safety badge for driver
             let safetyBadge = 'yellow' as 'green' | 'yellow' | 'red';
             try {
-              const { getDriverSafetyRecord } = require('../utils/safetyStorage');
-              const safetyRecord = await getDriverSafetyRecord(driver.driverEmail);
-              safetyBadge = safetyRecord.safetyBadge;
+              const { getDriverSafetyRecord } = require('../services/safetyService');
+              const safetyRecord = await getDriverSafetyRecord(driver.user_id);
+              if (safetyRecord) {
+                safetyBadge = safetyRecord.safetyBadge;
+              }
             } catch (error) {
               console.error('Error getting safety badge:', error);
             }
             
             return {
-              id: driver.driverId,
-              name: driver.driverName,
+              id: driver.user_id,
+              name: driver.full_name,
               latitude: driver.latitude,
               longitude: driver.longitude,
               eta: `${estimatedMinutes} min`,
               distance: `${distanceKm.toFixed(1)} km`,
               distanceKm, // Store as number for sorting
-              tricyclePlate: driver.tricyclePlate || 'N/A',
-              rating: driver.rating || 0,
-              totalRides: driver.totalRides || 0,
-              driverEmail: driver.driverEmail,
+              tricyclePlate: driver.plate_number || 'N/A',
+              rating: driver.average_rating || 0,
+              totalRides: driver.total_rides || 0,
+              driverEmail: driver.user_id,
               safetyBadge,
             };
           })
@@ -330,11 +419,11 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
   };
 
   const handleSchedule = () => {
-    setShowScheduleModal(true);
+    navigation.navigate('ScheduleHistory');
   };
 
   const handleFavorites = () => {
-    setShowFavoritesModal(true);
+    navigation.navigate('Favorites', { userId });
   };
 
   const handleAddFavorite = () => {
@@ -342,23 +431,36 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
   };
 
   const handleSaveFavorite = async () => {
-    if (!newFavoriteName.trim() || !newFavoriteAddress.trim() || !newFavoriteCoordinates || !userEmail) {
+    if (!newFavoriteName.trim() || !newFavoriteAddress.trim() || !newFavoriteCoordinates || !userId) {
       Alert.alert('Missing Information', 'Please provide a name, address, and location for your favorite.');
       return;
     }
 
     try {
-      await addFavoriteLocation(
-        userEmail,
-        newFavoriteName.trim(),
-        newFavoriteAddress.trim(),
-        newFavoriteCoordinates,
-        newFavoriteIcon
-      );
+      // Insert into Supabase
+      const { error } = await supabase
+        .from('favorite_locations')
+        .insert({
+          user_id: userId,
+          name: newFavoriteName.trim(),
+          address: newFavoriteAddress.trim(),
+          latitude: newFavoriteCoordinates.latitude,
+          longitude: newFavoriteCoordinates.longitude,
+          icon: newFavoriteIcon,
+        });
+      
+      if (error) throw error;
       
       // Reload favorites
-      const favorites = await getFavoriteLocations(userEmail);
-      setFavoriteLocations(favorites);
+      const { data: favorites } = await supabase
+        .from('favorite_locations')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+      
+      if (favorites) {
+        setFavoriteLocations(favorites);
+      }
       
       // Reset form
       setNewFavoriteName('');
@@ -384,9 +486,23 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteFavoriteLocation(favoriteId);
-              const favorites = await getFavoriteLocations(userEmail);
-              setFavoriteLocations(favorites);
+              const { error } = await supabase
+                .from('favorite_locations')
+                .delete()
+                .eq('id', favoriteId);
+              
+              if (error) throw error;
+              
+              // Reload favorites
+              const { data: favorites } = await supabase
+                .from('favorite_locations')
+                .select('*')
+                .eq('user_id', userId)
+                .order('created_at', { ascending: false });
+              
+              if (favorites) {
+                setFavoriteLocations(favorites);
+              }
             } catch (error) {
               Alert.alert('Error', 'Failed to delete favorite location');
             }
@@ -396,13 +512,15 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
     );
   };
 
-  const handleUseFavorite = (favorite: FavoriteLocation, useAs: 'pickup' | 'dropoff') => {
+  const handleUseFavorite = (favorite: any, useAs: 'pickup' | 'dropoff') => {
+    const coords = { latitude: favorite.latitude, longitude: favorite.longitude };
+    
     if (useAs === 'pickup') {
       setPickupLocation(favorite.name);
       if (navigation) {
         navigation.navigate('EnterDropoff', {
           pickupLocation: favorite.name,
-          pickupCoordinates: favorite.coordinates,
+          pickupCoordinates: coords,
         });
       } else {
         setShowFavoritesModal(false);
@@ -416,7 +534,7 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
           pickupLocation: pickupLocation,
           pickupCoordinates: userCoordinates,
           dropoffLocation: favorite.name,
-          dropoffCoordinates: favorite.coordinates,
+          dropoffCoordinates: coords,
         });
       }
     }
@@ -527,12 +645,138 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
                   <Text style={styles.locationText}>Lopez, Quezon</Text>
                 </View>
               </View>
-              <TouchableOpacity style={styles.notificationButton}>
+              <TouchableOpacity 
+                style={styles.notificationButton}
+                onPress={() => {
+                  Alert.alert(
+                    'Notifications',
+                    'No new notifications',
+                    [{ text: 'OK' }]
+                  );
+                }}
+              >
                 <Ionicons name="notifications-outline" size={22} color={colors.darkText} />
                 <View style={styles.notificationBadge} />
               </TouchableOpacity>
             </View>
           </View>
+
+          {/* Active Booking Card */}
+          {activeBooking && (
+            <View style={styles.activeBookingContainer}>
+              <View style={styles.activeBookingCard}>
+                <View style={styles.activeBookingHeader}>
+                  <View style={styles.activeBookingStatusBadge}>
+                    <View style={styles.pulseIndicator} />
+                    <Text style={styles.activeBookingStatusText}>
+                      {activeBooking.status === 'searching' && 'Finding Driver...'}
+                      {activeBooking.status === 'driver_accepted' && 'Driver Accepted'}
+                      {activeBooking.status === 'arrived' && 'Driver Arrived'}
+                      {activeBooking.status === 'in_progress' && 'Trip In Progress'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => {
+                      // Navigate to appropriate screen based on status
+                      if (activeBooking.status === 'searching') {
+                        navigation?.navigate('SearchingDriver', {
+                          bookingId: activeBooking.id,
+                          pickupLocation: activeBooking.pickup_location,
+                          dropoffLocation: activeBooking.dropoff_location,
+                          pickupCoordinates: {
+                            latitude: activeBooking.pickup_latitude,
+                            longitude: activeBooking.pickup_longitude,
+                          },
+                          dropoffCoordinates: {
+                            latitude: activeBooking.dropoff_latitude,
+                            longitude: activeBooking.dropoff_longitude,
+                          },
+                          distance: activeBooking.distance,
+                          fareEstimate: { min: activeBooking.fare, max: activeBooking.fare },
+                        });
+                      }
+                    }}
+                  >
+                    <Ionicons name="chevron-forward" size={24} color={colors.primary} />
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.activeBookingContent}>
+                  <View style={styles.activeBookingRoute}>
+                    <View style={styles.routePoint}>
+                      <View style={[styles.routeDot, { backgroundColor: colors.primary }]} />
+                      <Text style={styles.routeText} numberOfLines={1}>
+                        {activeBooking.pickup_location}
+                      </Text>
+                    </View>
+                    <View style={styles.routeLine} />
+                    <View style={styles.routePoint}>
+                      <View style={[styles.routeDot, { backgroundColor: colors.error }]} />
+                      <Text style={styles.routeText} numberOfLines={1}>
+                        {activeBooking.dropoff_location}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.activeBookingDetails}>
+                    <View style={styles.bookingDetailItem}>
+                      <Ionicons name="cash-outline" size={16} color={colors.gray} />
+                      <Text style={styles.bookingDetailText}>₱{activeBooking.fare}</Text>
+                    </View>
+                    <View style={styles.bookingDetailItem}>
+                      <Ionicons name="navigate-outline" size={16} color={colors.gray} />
+                      <Text style={styles.bookingDetailText}>{activeBooking.distance?.toFixed(1)} km</Text>
+                    </View>
+                  </View>
+                </View>
+                
+                {/* Cancel Button - Only show when searching for driver */}
+                {activeBooking.status === 'searching' && (
+                  <TouchableOpacity
+                    style={styles.cancelButton}
+                    onPress={() => {
+                      Alert.alert(
+                        'Cancel Ride',
+                        'Are you sure you want to cancel this ride request?',
+                        [
+                          {
+                            text: 'No',
+                            style: 'cancel',
+                          },
+                          {
+                            text: 'Yes, Cancel',
+                            style: 'destructive',
+                            onPress: async () => {
+                              try {
+                                // Use cancelTrip from tripService
+                                const { cancelTrip } = require('../services/tripService');
+                                const result = await cancelTrip(activeBooking.id, 'passenger');
+
+                                if (!result.success) {
+                                  console.error('Error cancelling trip:', result.error);
+                                  Alert.alert('Error', result.error || 'Failed to cancel ride. Please try again.');
+                                } else {
+                                  // Refresh active booking
+                                  if (userId) {
+                                    await loadActiveBooking(userId);
+                                  }
+                                  Alert.alert('Ride Cancelled', 'Your ride request has been cancelled.');
+                                }
+                              } catch (error) {
+                                console.error('Error cancelling ride:', error);
+                                Alert.alert('Error', 'Failed to cancel ride. Please try again.');
+                              }
+                            },
+                          },
+                        ]
+                      );
+                    }}
+                  >
+                    <Ionicons name="close-circle-outline" size={20} color={colors.error} />
+                    <Text style={styles.cancelButtonText}>Cancel Ride</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+          )}
 
           {/* Main Search Bar - Prominent */}
           <View style={styles.searchContainer}>
@@ -594,6 +838,42 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
             </View>
           </View>
 
+          {/* Discount Verification Card - Redesigned */}
+          <TouchableOpacity
+            style={styles.discountVerificationCard}
+            onPress={() => navigation?.navigate('DiscountVerification')}
+            activeOpacity={0.85}
+          >
+            <View style={styles.discountCardGradient}>
+              <View style={styles.discountCardHeader}>
+                <View style={styles.discountBadge}>
+                  <Ionicons name="pricetag" size={20} color={colors.white} />
+                  <Text style={styles.discountBadgeText}>SAVE 20%</Text>
+                </View>
+                <Ionicons name="arrow-forward" size={24} color={colors.white} />
+              </View>
+              
+              <Text style={styles.discountMainTitle}>
+                Get Your Discount Now! 🎉
+              </Text>
+              
+              <Text style={styles.discountDescription}>
+                Upload your Senior Citizen or PWD ID and enjoy 20% off on all rides after admin verification
+              </Text>
+              
+              <View style={styles.discountFeatures}>
+                <View style={styles.discountFeatureItem}>
+                  <Ionicons name="checkmark-circle" size={16} color={colors.white} />
+                  <Text style={styles.discountFeatureText}>Quick verification</Text>
+                </View>
+                <View style={styles.discountFeatureItem}>
+                  <Ionicons name="checkmark-circle" size={16} color={colors.white} />
+                  <Text style={styles.discountFeatureText}>Lifetime discount</Text>
+                </View>
+              </View>
+            </View>
+          </TouchableOpacity>
+
           {/* Stats Section */}
           <View style={styles.statsContainer}>
             <Text style={styles.sectionTitle}>Your Activity</Text>
@@ -602,21 +882,23 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
                 <View style={[styles.statIconWrapper, { backgroundColor: '#E8F5E9' }]}>
                   <Ionicons name="car" size={20} color={colors.success} />
                 </View>
-                <Text style={styles.statValue}>0</Text>
+                <Text style={styles.statValue}>{totalRides}</Text>
                 <Text style={styles.statLabel}>Total Rides</Text>
               </View>
               <View style={styles.statCard}>
                 <View style={[styles.statIconWrapper, { backgroundColor: '#E3F2FD' }]}>
                   <Ionicons name="star" size={20} color={colors.warning} />
                 </View>
-                <Text style={styles.statValue}>-</Text>
+                <Text style={styles.statValue}>
+                  {averageRating ? averageRating.toFixed(1) : '-'}
+                </Text>
                 <Text style={styles.statLabel}>Rating</Text>
               </View>
               <View style={styles.statCard}>
                 <View style={[styles.statIconWrapper, { backgroundColor: '#FFF3E0' }]}>
                   <Ionicons name="cash" size={20} color={colors.buttonPrimary} />
                 </View>
-                <Text style={styles.statValue}>₱0</Text>
+                <Text style={styles.statValue}>₱{totalSpent.toFixed(0)}</Text>
                 <Text style={styles.statLabel}>Total Spent</Text>
               </View>
             </View>
@@ -626,19 +908,43 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
           <View style={styles.recentContainer}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Recent Trips</Text>
-              <TouchableOpacity onPress={() => navigation?.navigate('PassengerTrips')}>
+              <TouchableOpacity onPress={() => navigation?.navigate('PassengerTrips' as never)}>
                 <Text style={styles.seeAllText}>See All</Text>
               </TouchableOpacity>
             </View>
-            <View style={styles.recentCard}>
-              <View style={styles.recentIconWrapper}>
-                <Ionicons name="time-outline" size={24} color={colors.gray} />
+            {recentTrips.length === 0 ? (
+              <View style={styles.recentCard}>
+                <View style={styles.recentIconWrapper}>
+                  <Ionicons name="time-outline" size={24} color={colors.gray} />
+                </View>
+                <View style={styles.recentContent}>
+                  <Text style={styles.recentTitle}>No recent trips</Text>
+                  <Text style={styles.recentSubtext}>Your trip history will appear here</Text>
+                </View>
               </View>
-              <View style={styles.recentContent}>
-                <Text style={styles.recentTitle}>No recent trips</Text>
-                <Text style={styles.recentSubtext}>Your trip history will appear here</Text>
-              </View>
-            </View>
+            ) : (
+              recentTrips.map((trip) => (
+                <View key={trip.id} style={styles.recentCard}>
+                  <View style={styles.recentIconWrapper}>
+                    <Ionicons name="car" size={24} color={colors.primary} />
+                  </View>
+                  <View style={styles.recentContent}>
+                    <Text style={styles.recentTitle}>
+                      {trip.pickup_location} → {trip.dropoff_location}
+                    </Text>
+                    <Text style={styles.recentSubtext}>
+                      {new Date(trip.created_at).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </Text>
+                  </View>
+                  <Text style={styles.recentFare}>₱{trip.fare || 0}</Text>
+                </View>
+              ))
+            )}
           </View>
 
           {/* Emergency SOS Section */}
@@ -1103,7 +1409,7 @@ export const PassengerHomeScreen: React.FC<PassengerHomeScreenProps> = ({
                             <View key={favorite.id} style={styles.favoriteItem}>
                               <View style={styles.favoriteIcon}>
                                 <Ionicons 
-                                  name={iconMap[favorite.icon || 'location'] as any} 
+                                  name={(iconMap as any)[favorite.icon || 'location'] || 'location'} 
                                   size={24} 
                                   color={colors.primary} 
                                 />
@@ -1498,6 +1804,104 @@ const styles = StyleSheet.create({
   scrollView: {
     flex: 1,
   },
+  activeBookingContainer: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    marginBottom: spacing.md, // Add space between active booking and search bar
+  },
+  activeBookingCard: {
+    backgroundColor: colors.white,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    ...shadows.medium,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.primary,
+  },
+  activeBookingHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
+  activeBookingStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primaryLight,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: borderRadius.full,
+  },
+  pulseIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+    marginRight: spacing.xs,
+  },
+  activeBookingStatusText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+  activeBookingContent: {
+    gap: spacing.md,
+  },
+  activeBookingRoute: {
+    gap: spacing.xs,
+  },
+  routePoint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  routeDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  routeText: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text,
+  },
+  routeLine: {
+    width: 2,
+    height: 20,
+    backgroundColor: colors.border,
+    marginLeft: 4,
+  },
+  activeBookingDetails: {
+    flexDirection: 'row',
+    gap: spacing.lg,
+  },
+  bookingDetailItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  bookingDetailText: {
+    fontSize: 13,
+    color: colors.gray,
+    fontWeight: '500',
+  },
+  cancelButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.error,
+    backgroundColor: colors.errorLight || '#fee',
+  },
+  cancelButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.error,
+  },
   scrollContent: {
     paddingBottom: spacing.xl * 2,
   },
@@ -1835,6 +2239,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.gray,
   },
+  recentFare: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.primary,
+  },
   sosContainer: {
     paddingHorizontal: spacing.lg,
     marginBottom: spacing.lg,
@@ -2012,22 +2421,21 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl * 2,
   },
   bottomSheet: {
-    backgroundColor: 'transparent',
+    backgroundColor: colors.white,
+    borderTopLeftRadius: borderRadius.xl,
+    borderTopRightRadius: borderRadius.xl,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
-    paddingBottom: 0,
-    minHeight: 300,
+    paddingBottom: spacing.xl,
+    maxHeight: SCREEN_HEIGHT * 0.85,
     width: '100%',
-    flexDirection: 'column',
-    flex: 1,
+    ...shadows.large,
   },
   modalScrollView: {
-    flex: 1,
-    maxHeight: '100%',
+    maxHeight: SCREEN_HEIGHT * 0.6,
   },
   modalScrollContent: {
-    paddingBottom: spacing.lg,
-    flexGrow: 1,
+    paddingBottom: spacing.xl,
   },
   nearbyTricyclesContainer: {
     flexDirection: 'column',
@@ -2668,5 +3076,67 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
     color: colors.gray,
     textAlign: 'center',
+  },
+  // Discount Verification Card Styles - Redesigned
+  discountVerificationCard: {
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.md,
+    borderRadius: 16,
+    overflow: 'hidden',
+    ...shadows.medium,
+  },
+  discountCardGradient: {
+    backgroundColor: colors.buttonPrimary,
+    padding: spacing.lg,
+    paddingVertical: spacing.xl,
+  },
+  discountCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  discountBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  discountBadgeText: {
+    color: colors.white,
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  discountMainTitle: {
+    ...typography.h3,
+    fontWeight: '800',
+    color: colors.white,
+    marginBottom: spacing.sm,
+    fontSize: 22,
+  },
+  discountDescription: {
+    ...typography.body,
+    color: colors.white,
+    opacity: 0.95,
+    lineHeight: 20,
+    marginBottom: spacing.md,
+  },
+  discountFeatures: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  discountFeatureItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  discountFeatureText: {
+    color: colors.white,
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

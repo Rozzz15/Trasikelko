@@ -7,6 +7,7 @@ import {
   ScrollView,
   Alert,
   Image,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MapView, { Marker, Polyline, Region } from 'react-native-maps';
@@ -15,9 +16,9 @@ import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { generateAccurateRoute, Coordinate } from '../utils/routeUtils';
-import { updateTrip, getTrips } from '../utils/tripStorage';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { updateDriverStatus, updateDriverLocation } from '../utils/driverLocationStorage';
+import { updateTrip, getTripById } from '../services/tripService';
+// Using Supabase only - like Grab/Angkas
+import { updateDriverStatus, updateDriverLocationAndStatus } from '../services/driverService';
 import { getUserAccount } from '../utils/userStorage';
 
 interface AcceptedRideScreenProps {
@@ -60,11 +61,10 @@ export const AcceptedRideScreen: React.FC<AcceptedRideScreenProps> = ({ navigati
       try {
         // Get trip details to determine ride type
         if (route.params.bookingId) {
-          const trips = await getTrips();
-          const trip = trips.find(t => t.id === route.params.bookingId);
+          const trip = await getTripById(route.params.bookingId);
           if (trip) {
-            setRideType(trip.rideType || 'normal');
-            setErrandNotes(trip.errandNotes || '');
+            setRideType(trip.ride_type || 'normal');
+            setErrandNotes(trip.errand_notes || '');
           }
         }
 
@@ -113,12 +113,28 @@ export const AcceptedRideScreen: React.FC<AcceptedRideScreenProps> = ({ navigati
     // Update trip status to 'arrived'
     try {
       if (route.params.bookingId) {
-        await updateTrip(route.params.bookingId, {
+        console.log('[AcceptedRideScreen] Updating trip to arrived, bookingId:', route.params.bookingId);
+        const result = await updateTrip(route.params.bookingId, {
           status: 'arrived',
         });
+        console.log('[AcceptedRideScreen] Update result:', result);
+        if (!result.success) {
+          console.error('[AcceptedRideScreen] Error updating trip status:', result.error);
+          Alert.alert('Error', `Failed to update trip status: ${result.error}`);
+          setHasArrived(false); // Revert state
+          return;
+        }
+      } else {
+        console.error('[AcceptedRideScreen] No bookingId found in route params');
+        Alert.alert('Error', 'Booking ID not found');
+        setHasArrived(false);
+        return;
       }
     } catch (error) {
-      console.error('Error updating trip status:', error);
+      console.error('[AcceptedRideScreen] Exception updating trip status:', error);
+      Alert.alert('Error', 'An unexpected error occurred');
+      setHasArrived(false);
+      return;
     }
     
     Alert.alert('Arrived', 'You have arrived at the pickup location');
@@ -132,10 +148,13 @@ export const AcceptedRideScreen: React.FC<AcceptedRideScreenProps> = ({ navigati
     // "The system updates the booking status to In Progress"
     try {
       if (route.params.bookingId) {
-        await updateTrip(route.params.bookingId, {
+        const result = await updateTrip(route.params.bookingId, {
           status: 'in_progress',
-          startedAt: new Date().toISOString(),
+          started_at: new Date().toISOString(),
         });
+        if (!result.success) {
+          console.error('Error updating trip status:', result.error);
+        }
       }
     } catch (error) {
       console.error('Error updating trip status:', error);
@@ -160,31 +179,29 @@ export const AcceptedRideScreen: React.FC<AcceptedRideScreenProps> = ({ navigati
     // Ensure trip status is in_progress (should already be set by confirm pickup)
     try {
       if (route.params.bookingId) {
-        await updateTrip(route.params.bookingId, {
+        const result = await updateTrip(route.params.bookingId, {
           status: 'in_progress',
-          startedAt: new Date().toISOString(),
+          started_at: new Date().toISOString(),
         });
+        if (!result.success) {
+          console.error('Error updating trip status:', result.error);
+        }
       }
       
       // Update driver status to 'on_ride' when trip actually starts
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
-        await updateDriverStatus(currentUserEmail, 'on_ride');
+      const { getCurrentUser } = require('../utils/sessionHelper');
+      const currentUser = await getCurrentUser();
+      if (currentUser?.id) {
+        await updateDriverStatus(currentUser.id, 'on_ride');
         
         // Update driver location with on_ride status
-        const driverAccount = await getUserAccount(currentUserEmail);
-        if (driverAccount && driverLocation) {
-          await updateDriverLocation(
-            currentUserEmail,
-            currentUserEmail,
-            driverAccount.fullName || 'Driver',
+        if (driverLocation) {
+          await updateDriverLocationAndStatus(
+            currentUser.id,
             driverLocation.latitude,
             driverLocation.longitude,
-            true,
             'on_ride',
-            driverAccount.plateNumber,
-            undefined, // rating not stored in UserAccount
-            undefined  // totalRides not stored in UserAccount
+            true
           );
         }
       }
@@ -198,12 +215,55 @@ export const AcceptedRideScreen: React.FC<AcceptedRideScreenProps> = ({ navigati
     });
   };
 
-  const handleCallPassenger = () => {
-    console.log('Calling passenger...');
+  const handleCallPassenger = async () => {
+    try {
+      console.log('[handleCallPassenger] Original number:', passengerPhone);
+      const phoneNumber = passengerPhone.replace(/[^0-9+]/g, ''); // Remove any non-numeric characters except +
+      console.log('[handleCallPassenger] Cleaned number:', phoneNumber);
+      const phoneUrl = `tel:${phoneNumber}`;
+      console.log('[handleCallPassenger] Phone URL:', phoneUrl);
+      
+      const canCall = await Linking.canOpenURL(phoneUrl);
+      console.log('[handleCallPassenger] Can call:', canCall);
+      
+      if (canCall) {
+        await Linking.openURL(phoneUrl);
+      } else {
+        // Try without checking (works on some devices)
+        try {
+          await Linking.openURL(phoneUrl);
+        } catch (e) {
+          console.error('[handleCallPassenger] Direct open failed:', e);
+          Alert.alert(
+            'Cannot Make Call',
+            'Unable to make phone calls. This may be due to:\n\n' +
+            '• Running on emulator/simulator\n' +
+            '• Device permissions not granted\n\n' +
+            `Phone number: ${phoneNumber}`
+          );
+        }
+      }
+    } catch (error) {
+      console.error('[handleCallPassenger] Error:', error);
+      Alert.alert('Error', 'Failed to initiate call');
+    }
   };
 
-  const handleMessagePassenger = () => {
-    console.log('Messaging passenger...');
+  const handleMessagePassenger = async () => {
+    try {
+      const phoneNumber = passengerPhone.replace(/[^0-9+]/g, ''); // Remove any non-numeric characters except +
+      const smsUrl = `sms:${phoneNumber}`;
+      
+      const canMessage = await Linking.canOpenURL(smsUrl);
+      if (canMessage) {
+        await Linking.openURL(smsUrl);
+      } else {
+        Alert.alert('Error', 'Unable to send messages on this device');
+      }
+    } catch (error) {
+      console.error('Error messaging passenger:', error);
+      Alert.alert('Error', 'Failed to open messaging app');
+    }
   };
 
   return (

@@ -19,11 +19,12 @@ import * as Location from 'expo-location';
 import { Card, Button } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import { calculateDistance, calculateFareEstimate } from '../utils/tripStorage';
+import { calculateDistance } from '../services/tripService';
+import { calculateFareEstimate } from '../utils/tripStorage';
 import { generateAccurateRoute, Coordinate } from '../utils/routeUtils';
 import { getFavoriteLocations, FavoriteLocation } from '../utils/favoriteLocationsStorage';
 import { getUserAccount } from '../utils/userStorage';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// AsyncStorage removed - using Supabase only
 
 interface EnterDropoffScreenProps {
   navigation: any;
@@ -54,7 +55,7 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
   const [routeCoordinates, setRouteCoordinates] = useState<Coordinate[]>([]);
   const [userLocation, setUserLocation] = useState<Region | null>(null);
   const [distance, setDistance] = useState<number | null>(null);
-  const [fareEstimate, setFareEstimate] = useState<{ min: number; max: number } | null>(null);
+  const [fareEstimate, setFareEstimate] = useState<{ min: number; max: number; base: number } | null>(null);
   const [eta, setEta] = useState<string>('5 min');
   const [availableDrivers, setAvailableDrivers] = useState(3);
   const [isTripDetailsMinimized, setIsTripDetailsMinimized] = useState(false);
@@ -141,10 +142,12 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
     // Load user account data to check for Senior/PWD status
     const loadUserData = async () => {
       try {
-        const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-        if (currentUserEmail) {
-          setUserEmail(currentUserEmail);
-          const userAccount = await getUserAccount(currentUserEmail);
+        const { getCurrentUser } = require('../utils/sessionHelper');
+        const user = await getCurrentUser();
+        if (user) {
+          setUserEmail(user.email);
+          const { getPassengerFromSupabase } = require('../services/userService');
+          const userAccount = await getPassengerFromSupabase(user.id);
           if (userAccount) {
             setIsSeniorCitizen(userAccount.isSeniorCitizen || false);
             setIsPWD(userAccount.isPWD || false);
@@ -300,18 +303,13 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
         const currentAddresses = await Location.reverseGeocodeAsync(centerCoords);
         if (currentAddresses && currentAddresses.length > 0) {
           const address = currentAddresses[0];
-          let locationName = 'Current Area';
-          if (address.street && address.street.trim()) {
-            locationName = address.street.trim();
-          } else if (address.district && address.district.trim()) {
-            locationName = address.district.trim();
-          }
-          if (address.city || address.region) {
-            const cityRegion = address.city || address.region || '';
-            if (cityRegion && !locationName.includes(cityRegion)) {
-              locationName += `, ${cityRegion}`;
-            }
-          }
+          // Format as "Brgy. [Barangay], [Street]"
+          const barangay = address.subregion || address.district || address.city || 'Current Area';
+          const street = address.street || address.name || '';
+          
+          let locationName = street 
+            ? `Brgy. ${barangay}, ${street}`
+            : `Brgy. ${barangay}`;
           
           const finalName = locationName.trim();
           if (!seenAddresses.has(finalName)) {
@@ -348,10 +346,13 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
               const addresses = await Location.reverseGeocodeAsync(coords);
               if (addresses && addresses.length > 0) {
                 const address = addresses[0];
-                let locationName = address.street || address.name || address.district || dir.name;
-                if (address.city || address.region) {
-                  locationName += `, ${address.city || address.region || ''}`;
-                }
+                // Format as "Brgy. [Barangay], [Street]"
+                const barangay = address.subregion || address.district || address.city || dir.name;
+                const street = address.street || address.name || '';
+                
+                const locationName = street 
+                  ? `Brgy. ${barangay}, ${street}`
+                  : `Brgy. ${barangay}`;
                 suggestions.push({
                   name: locationName.trim(),
                   coordinates: coords,
@@ -480,19 +481,43 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
     let hasSeniorDiscount = false;
     let hasPWDDiscount = false;
     try {
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
-        const userAccount = await getUserAccount(currentUserEmail);
+      const { getCurrentUser } = require('../utils/sessionHelper');
+      const user = await getCurrentUser();
+      if (user) {
+        const { getPassengerFromSupabase } = require('../services/userService');
+        const userAccount = await getPassengerFromSupabase(user.id);
         if (userAccount) {
-          hasSeniorDiscount = userAccount.isSeniorCitizen || false;
-          hasPWDDiscount = userAccount.isPWD || false;
+          // Check if discount is verified and approved by admin
+          const { getDiscountStatus } = require('../services/discountService');
+          const discountResult = await getDiscountStatus(userAccount.id);
+
+          hasSeniorDiscount = discountResult.success && 
+                              discountResult.status?.verification_status === 'approved' &&
+                              discountResult.status?.type === 'senior';
+
+          hasPWDDiscount = discountResult.success && 
+                           discountResult.status?.verification_status === 'approved' &&
+                           discountResult.status?.type === 'pwd';
         }
       }
     } catch (error) {
       console.error('Error checking user discount status:', error);
     }
     
-    const fare = await calculateFareEstimate(dist, 'Lopez', isNightTrip, hasSeniorDiscount, hasPWDDiscount, rideType === 'errand');
+    // Extract barangay name from dropoff location for Lopez fare lookup
+    // Dropoff location format examples: "Brgy. Maguisian, Main St" or "Brgy. Del Pilar"
+    // Remove "Brgy. " prefix and get just the barangay name (before comma or street)
+    let dropoffBarangay = dropoffLocation.replace(/^Brgy\.\s*/i, '').split(',')[0].trim();
+    
+    console.log('[EnterDropoffScreen] Calculating fare for:', {
+      dropoff: dropoffLocation,
+      barangay: dropoffBarangay,
+      hasSeniorDiscount,
+      hasPWDDiscount,
+      isErrand: rideType === 'errand'
+    });
+    
+    const fare = await calculateFareEstimate(dist, dropoffBarangay, isNightTrip, hasSeniorDiscount, hasPWDDiscount, rideType === 'errand');
     setFareEstimate(fare);
     
     // Estimate ETA (rough calculation: 30 km/h average speed, minimum 1 minute)
@@ -541,16 +566,19 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
           const address = addresses[0];
           let locationName = '';
           
-          // Build address string from available components
-          const addressParts: string[] = [];
-          if (address.street) addressParts.push(address.street);
-          if (address.name) addressParts.push(address.name);
-          if (address.district) addressParts.push(address.district);
-          if (address.city) addressParts.push(address.city);
-          if (address.region) addressParts.push(address.region);
+          // Format as "Brgy. [Barangay], [Street]" for Lopez, Quezon
+          const barangay = address.subregion || address.district || address.city || 'Unknown';
+          const street = address.street || address.name || '';
           
-          if (addressParts.length > 0) {
-            locationName = addressParts.join(', ');
+          // Prioritize showing barangay name for accurate fare calculation
+          if (street) {
+            locationName = `Brgy. ${barangay}, ${street}`;
+          } else {
+            locationName = `Brgy. ${barangay}`;
+          }
+          
+          if (locationName === 'Brgy. Unknown' && address.region) {
+            locationName = address.region;
           } else {
             locationName = `Location (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`;
           }
@@ -626,7 +654,7 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
     if (!finalDistance || !finalFareEstimate) {
       // Use default estimates if calculation failed
       finalDistance = finalDistance || 2.0; // Default 2km
-      finalFareEstimate = finalFareEstimate || { min: 30, max: 50 }; // Default fare range
+      finalFareEstimate = finalFareEstimate || { min: 30, max: 50, base: 30 }; // Default fare range
       setDistance(finalDistance);
       setFareEstimate(finalFareEstimate);
     }
@@ -1018,9 +1046,9 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
                 <View style={styles.fareRow}>
                   <Ionicons name="cash" size={20} color={colors.success} />
                   <View style={styles.fareInfo}>
-                    <Text style={styles.fareLabel}>Estimated Fare</Text>
+                    <Text style={styles.fareLabel}>Fare</Text>
                     <Text style={styles.fareValue}>
-                      ₱{fareEstimate.min} - ₱{fareEstimate.max}
+                      ₱{fareEstimate.base || fareEstimate.min}
                     </Text>
                   </View>
                 </View>
@@ -1038,7 +1066,7 @@ export const EnterDropoffScreen: React.FC<EnterDropoffScreenProps> = ({ navigati
                 <View style={styles.fareRowMinimized}>
                   <Ionicons name="cash" size={18} color={colors.success} />
                   <Text style={styles.fareValueMinimized}>
-                    ₱{fareEstimate.min} - ₱{fareEstimate.max}
+                    ₱{fareEstimate.base || fareEstimate.min}
                   </Text>
                 </View>
               </View>

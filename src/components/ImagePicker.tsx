@@ -29,6 +29,7 @@ export const CustomImagePicker: React.FC<ImagePickerProps> = ({
 
   const pickImage = async () => {
     try {
+      console.log('[ImagePicker] pickImage called - opening gallery...');
       // Request media library permissions (returns current status if already granted)
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       
@@ -56,11 +57,16 @@ export const CustomImagePicker: React.FC<ImagePickerProps> = ({
       if (!result.canceled && result.assets && result.assets.length > 0 && result.assets[0]) {
         const uri = result.assets[0].uri;
         if (uri) {
+          console.log('✅ [ImagePicker] Image selected from gallery:', uri);
           setImage(uri);
           onImageSelected(uri);
+          console.log('✅ [ImagePicker] onImageSelected callback called');
         } else {
+          console.error('❌ [ImagePicker] Image URI is null or undefined');
           Alert.alert('Error', 'Failed to load image. Please try again.');
         }
+      } else {
+        console.log('⚠️ [ImagePicker] User canceled image selection or no image selected');
       }
     } catch (error) {
       console.error('Error picking image from gallery:', error);
@@ -74,6 +80,7 @@ export const CustomImagePicker: React.FC<ImagePickerProps> = ({
 
   const takePhoto = async () => {
     try {
+      console.log('[ImagePicker] takePhoto called - opening camera...');
       // Request camera permissions
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       
@@ -103,11 +110,16 @@ export const CustomImagePicker: React.FC<ImagePickerProps> = ({
       if (result && !result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
         if (asset && asset.uri) {
+          console.log('✅ [ImagePicker] Photo taken from camera:', asset.uri);
           setImage(asset.uri);
           onImageSelected(asset.uri);
+          console.log('✅ [ImagePicker] onImageSelected callback called');
         } else {
+          console.error('❌ [ImagePicker] Camera photo URI is null or undefined');
           Alert.alert('Error', 'Failed to load image. Please try again.');
         }
+      } else {
+        console.log('⚠️ [ImagePicker] User canceled camera or no photo taken');
       }
     } catch (error) {
       console.error('Error taking photo:', error);

@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius } from '../theme';
-import { SafetyBadgeColor } from '../utils/safetyStorage';
+import { SafetyBadgeColor } from '../services/safetyService';
 
 interface SafetyBadgeProps {
   badgeColor: SafetyBadgeColor;

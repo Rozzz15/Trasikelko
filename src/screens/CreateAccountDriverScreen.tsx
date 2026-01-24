@@ -8,7 +8,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// AsyncStorage removed - using Supabase only
 import { Button, Input, ImagePicker, Card } from '../components';
 import {
   colors,
@@ -24,6 +24,10 @@ import {
   validateLicenseNumber,
   validatePlateNumber,
 } from '../utils/validation';
+import { registerUser } from '../services/authService';
+import { uploadProfilePhoto, uploadDriverLicense, uploadORCR } from '../services/storageService';
+import { updateDriverData } from '../services/authService';
+import { supabase } from '../config/supabase';
 
 interface CreateAccountDriverScreenProps {
   onSubmit: (data: DriverFormData) => void;
@@ -35,6 +39,7 @@ export interface DriverFormData {
   fullName: string;
   phoneNumber: string;
   email: string;
+  password: string;
   profilePhoto?: string;
   address: string;
   
@@ -60,6 +65,7 @@ export const CreateAccountDriverScreen: React.FC<CreateAccountDriverScreenProps>
     fullName: '',
     phoneNumber: '',
     email: '',
+    password: '',
     profilePhoto: undefined,
     address: '',
     driversLicenseNumber: '',
@@ -86,6 +92,9 @@ export const CreateAccountDriverScreen: React.FC<CreateAccountDriverScreenProps>
     }
     if (!validateEmail(formData.email)) {
       newErrors.email = 'Please enter a valid email address';
+    }
+    if (!validateRequired(formData.password) || formData.password.length < 6) {
+      newErrors.password = 'Password must be at least 6 characters';
     }
     if (!validateRequired(formData.address)) {
       newErrors.address = 'Please enter your address';
@@ -126,23 +135,172 @@ export const CreateAccountDriverScreen: React.FC<CreateAccountDriverScreenProps>
   const handleSubmit = async () => {
     if (validateForm()) {
       try {
-        // Store account type in AsyncStorage for login detection
-        await AsyncStorage.setItem(`account_type_${formData.email.toLowerCase()}`, 'driver');
-      } catch (error) {
-        console.error('Error storing account type:', error);
+        Alert.alert('Submitting Application', 'Please wait while we process your driver application...');
+
+        // 1. Register user with Supabase Auth
+        const result = await registerUser(
+          formData.email.toLowerCase(),
+          formData.password,
+          formData.fullName,
+          formData.phoneNumber,
+          'driver'
+        );
+
+        if (!result.success) {
+          Alert.alert('Registration Failed', result.error || 'Failed to create account. Please try again.');
+          return;
+        }
+
+        const userId = result.userId!;
+
+        // 2. Upload images to Supabase Storage
+        let profileUrl: string | undefined;
+        let licenseFrontUrl: string | undefined;
+        let licenseBackUrl: string | undefined;
+        let orcrUrl: string | undefined;
+
+        console.log('📸 Uploading driver documents...');
+        
+        if (formData.profilePhoto) {
+          console.log('📸 [STEP 1] Uploading driver profile photo...');
+          console.log('📸 [STEP 1] formData.profilePhoto:', formData.profilePhoto);
+          const result = await uploadProfilePhoto(userId, formData.profilePhoto);
+          console.log('📸 [STEP 1] Upload result:', JSON.stringify(result, null, 2));
+          
+          if (result.success && result.url) {
+            profileUrl = result.url;
+            console.log('✅ [STEP 1] Driver profile photo uploaded successfully');
+            console.log('✅ [STEP 1] profileUrl variable set to:', profileUrl);
+          } else {
+            console.error('❌ [STEP 1] Failed to upload profile photo:', result.error);
+            Alert.alert(
+              'Upload Warning', 
+              `Profile photo upload failed: ${result.error}\n\nYou can update it later from your profile.`,
+              [{ text: 'OK' }]
+            );
+          }
+        } else {
+          console.log('⚠️ [STEP 1] No profile photo selected by user');
+          // Don't show alert - profile photo is optional
+        }
+
+        if (formData.licenseFrontPhoto) {
+          const result = await uploadDriverLicense(userId, formData.licenseFrontPhoto, 'front');
+          if (result.success) {
+            licenseFrontUrl = result.url;
+          } else {
+            console.error('❌ Failed to upload license front:', result.error);
+          }
+        }
+
+        if (formData.licenseBackPhoto) {
+          const result = await uploadDriverLicense(userId, formData.licenseBackPhoto, 'back');
+          if (result.success) {
+            licenseBackUrl = result.url;
+          } else {
+            console.error('❌ Failed to upload license back:', result.error);
+          }
+        }
+
+        if (formData.orcrPhoto) {
+          const result = await uploadORCR(userId, formData.orcrPhoto);
+          if (result.success) {
+            orcrUrl = result.url;
+          } else {
+            console.error('❌ Failed to upload ORCR:', result.error);
+          }
+        }
+
+        console.log('📸 [STEP 2] Upload results:', { profileUrl, licenseFrontUrl, licenseBackUrl, orcrUrl });
+        console.log('📸 [STEP 2] Profile photo status:');
+        console.log('  - formData.profilePhoto:', formData.profilePhoto);
+        console.log('  - profileUrl variable:', profileUrl);
+        console.log('  - profileUrl type:', typeof profileUrl);
+        console.log('  - profileUrl truthiness:', !!profileUrl);
+        console.log('  - Will save to DB:', !!profileUrl);
+
+        // 3. Update user profile with profile photo
+        console.log('📸 [STEP 3] Checking if profileUrl exists for database save...');
+        if (profileUrl) {
+          console.log('📸 [STEP 3] YES - profileUrl exists, proceeding with database save');
+          console.log('💾 Saving driver profile photo URL to database...');
+          console.log('💾 User ID:', userId);
+          console.log('💾 URL to save:', profileUrl);
+          
+          const { data: updateData, error: userUpdateError } = await supabase
+            .from('users')
+            .update({ profile_photo_url: profileUrl })
+            .eq('id', userId)
+            .select();
+
+          if (userUpdateError) {
+            console.error('❌ Failed to save profile photo URL to database:', userUpdateError);
+            console.error('❌ Error details:', JSON.stringify(userUpdateError, null, 2));
+            Alert.alert(
+              'Warning',
+              'Profile photo uploaded but failed to save to database. Please contact support.',
+              [{ text: 'OK' }]
+            );
+          } else {
+            console.log('✅ Driver profile photo URL saved to database successfully');
+            console.log('✅ Updated data:', JSON.stringify(updateData, null, 2));
+          }
+        } else {
+          console.log('⚠️ [STEP 3] NO - profileUrl is falsy, skipping database save');
+          console.log('⚠️ [STEP 3] profileUrl value:', profileUrl);
+        }
+
+        // 4. Update driver profile with all information
+        console.log('📝 Updating driver profile data...');
+        const updateResult = await updateDriverData(userId, {
+          address: formData.address,
+          drivers_license_number: formData.driversLicenseNumber,
+          license_expiry_date: formData.licenseExpiryDate,
+          license_front_photo_url: licenseFrontUrl,
+          license_back_photo_url: licenseBackUrl,
+          plate_number: formData.plateNumber,
+          orcr_photo_url: orcrUrl,
+          vehicle_model: formData.vehicleModel,
+          vehicle_color: formData.vehicleColor,
+          franchise_number: formData.franchiseNumber || undefined,
+          verification_status: 'pending',
+        });
+
+        if (!updateResult.success) {
+          Alert.alert('Error', 'Failed to save driver details. Please try again.');
+          return;
+        }
+
+        console.log('✅ Driver profile updated successfully');
+
+        // 4. Success! Notify driver
+        Alert.alert(
+          'Application Submitted!',
+          `Your driver account has been created and submitted for verification.\n\nYou can log in with:\nEmail: ${formData.email}\nPassword: (the password you just entered)\n\nWe will review your documents and notify you once approved.`,
+          [{ text: 'OK', onPress: () => onSubmit(formData) }]
+        );
+      } catch (error: any) {
+        console.error('Error creating driver account:', error);
+        Alert.alert('Error', error.message || 'An unexpected error occurred. Please try again.');
       }
-      
-      Alert.alert(
-        'Account Submitted',
-        'Your driver account is under review. We will notify you once approved.',
-        [{ text: 'OK', onPress: () => onSubmit(formData) }]
-      );
     } else {
       Alert.alert('Validation Error', 'Please fill in all required fields correctly');
     }
   };
 
   const updateField = (field: keyof DriverFormData, value: string) => {
+    console.log(`[CreateAccountDriver] Field updated: ${field} = ${value}`);
+    
+    // Special logging for profile photo
+    if (field === 'profilePhoto') {
+      if (value) {
+        console.log('✅ [CreateAccountDriver] Profile photo selected!');
+        console.log('📸 [CreateAccountDriver] Profile photo URI:', value);
+      } else {
+        console.log('⚠️ [CreateAccountDriver] Profile photo cleared');
+      }
+    }
+    
     setFormData((prev) => ({ ...prev, [field]: value }));
     if (errors[field]) {
       setErrors((prev) => ({ ...prev, [field]: undefined }));
@@ -173,7 +331,7 @@ export const CreateAccountDriverScreen: React.FC<CreateAccountDriverScreenProps>
             </View>
             
             <ImagePicker
-              label="Profile Photo"
+              label="Profile Photo (optional)"
               onImageSelected={(uri) => updateField('profilePhoto', uri)}
               currentImage={formData.profilePhoto}
             />
@@ -206,6 +364,16 @@ export const CreateAccountDriverScreen: React.FC<CreateAccountDriverScreenProps>
               icon="mail-outline"
               keyboardType="email-address"
               autoCapitalize="none"
+            />
+
+            <Input
+              label="Password"
+              placeholder="Enter a password (min 6 characters)"
+              value={formData.password}
+              onChangeText={(text) => updateField('password', text)}
+              error={errors.password}
+              icon="lock-closed-outline"
+              secureTextEntry
             />
 
             <Input

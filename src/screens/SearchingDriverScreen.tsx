@@ -10,8 +10,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card } from '../components';
 import { colors, typography, spacing, borderRadius } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import { getActiveTrip } from '../utils/tripStorage';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getActiveTrip } from '../services/tripService';
+// Using Supabase only - no AsyncStorage
 
 interface SearchingDriverScreenProps {
   navigation: any;
@@ -45,10 +45,11 @@ export const SearchingDriverScreen: React.FC<SearchingDriverScreenProps> = ({ na
     // Check for driver acceptance periodically
     const checkForDriver = async () => {
       try {
-        const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-        if (currentUserEmail) {
-          const activeTrip = await getActiveTrip(currentUserEmail, 'passenger');
-          if (activeTrip && activeTrip.driverId && activeTrip.status === 'driver_accepted') {
+        const { getCurrentUser } = require('../utils/sessionHelper');
+        const user = await getCurrentUser();
+        if (user && user.id) {
+          const activeTrip = await getActiveTrip(user.id, 'passenger');
+          if (activeTrip && activeTrip.driver_id && activeTrip.status === 'driver_accepted') {
             setDriverFound(true);
             if (searchInterval) {
               clearInterval(searchInterval);
@@ -59,11 +60,11 @@ export const SearchingDriverScreen: React.FC<SearchingDriverScreenProps> = ({ na
               navigation.replace('DriverFound', {
                 ...route.params,
                 driver: {
-                  name: activeTrip.driverName || 'Driver',
-                  photo: activeTrip.driverPhoto,
+                  name: activeTrip.driver_name || 'Driver',
+                  photo: activeTrip.driver_photo,
                   rating: 4.8, // Could be stored in driver account
                   totalRides: 120, // Could be calculated from trip history
-                  tricyclePlate: activeTrip.tricyclePlate || 'N/A',
+                  tricyclePlate: activeTrip.tricycle_plate || 'N/A',
                   estimatedArrival: '3 min',
                 },
               });
@@ -102,12 +103,12 @@ export const SearchingDriverScreen: React.FC<SearchingDriverScreenProps> = ({ na
         {/* Loading Animation */}
         <View style={styles.loadingContainer}>
           <View style={styles.iconContainer}>
-            <Ionicons name="bicycle" size={80} color={colors.primary} />
-            {!driverFound && (
+            {driverFound ? (
+              <Ionicons name="checkmark-circle" size={80} color={colors.success || colors.primary} />
+            ) : (
               <ActivityIndicator
                 size="large"
                 color={colors.primary}
-                style={styles.loader}
               />
             )}
           </View>

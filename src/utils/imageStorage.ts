@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 
 /**
@@ -23,7 +23,7 @@ export const saveImagePermanently = async (uri: string, fileName?: string): Prom
     
     // Get the document directory (persistent storage)
     // Use documentDirectory for persistent files, cacheDirectory as fallback
-    const documentDirectory = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+    const documentDirectory = (FileSystem as any).documentDirectory || (FileSystem as any).cacheDirectory;
     if (!documentDirectory) {
       // If neither directory is available, return original URI
       console.warn('Document directory not available, returning original URI');

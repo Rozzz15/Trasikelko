@@ -19,6 +19,17 @@ web-build/
 *.tmp
 *.temp
 
+# Documentation (organized in docs folder)
+*.md
+!README.md
+*.sql
+test*.js
+test*.ts
+*.backup
+
+# Performance optimizations
+.expo-optimize/
+
 
 
 

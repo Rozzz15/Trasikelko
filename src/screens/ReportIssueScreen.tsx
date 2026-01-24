@@ -12,9 +12,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, Button } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// AsyncStorage removed - using Supabase only
 import { reportIssueToBarangay } from '../utils/barangayStorage';
-import { reportComplaint } from '../utils/safetyStorage';
+import { reportComplaint } from '../services/safetyService';
 import * as Location from 'expo-location';
 
 interface ReportIssueScreenProps {
@@ -48,7 +48,8 @@ export const ReportIssueScreen: React.FC<ReportIssueScreenProps> = ({ navigation
     setIsSubmitting(true);
 
     try {
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
+      const { getCurrentUserEmail } = require('../utils/sessionHelper');
+      const currentUserEmail = await getCurrentUserEmail();
       if (!currentUserEmail) {
         Alert.alert('Error', 'Please login to report an issue');
         return;
@@ -93,14 +94,18 @@ export const ReportIssueScreen: React.FC<ReportIssueScreenProps> = ({ navigation
 
       // If it's a driver complaint, also report to safety system
       if (driverEmail && (issueType === 'driver_complaint' || issueType === 'overcharging')) {
-        await reportComplaint({
-          driverEmail,
-          date: new Date().toISOString(),
-          type: issueType === 'overcharging' ? 'overcharging' : complaintType,
-          description: description.trim(),
-          reportedBy: currentUserEmail,
-          tripId,
-        });
+        const { getCurrentUser } = require('../utils/sessionHelper');
+        const user = await getCurrentUser();
+        if (user?.id) {
+          await reportComplaint(
+            user.id,
+            driverEmail,
+            currentUserEmail,
+            description.trim(),
+            issueType === 'overcharging' ? 'high' : 'medium',
+            tripId
+          );
+        }
       }
 
       Alert.alert(

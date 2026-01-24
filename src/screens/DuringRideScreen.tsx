@@ -54,33 +54,43 @@ export const DuringRideScreen: React.FC<DuringRideScreenProps> = ({ navigation, 
       setMapRegion(region);
     }
     
-    // Simulate trip progress
+    // Trip duration counter
     const durationInterval = setInterval(() => {
       setTripDuration((prev) => prev + 1);
-      
-      // Simulate moving towards destination
-      if (currentLocation && dropoffCoordinates) {
-        const progress = Math.min(tripDuration / 10, 0.9); // Assume 10 min trip
-        setCurrentLocation({
-          latitude: currentLocation.latitude + (dropoffCoordinates.latitude - currentLocation.latitude) * 0.1,
-          longitude: currentLocation.longitude + (dropoffCoordinates.longitude - currentLocation.longitude) * 0.1,
-        });
-      }
     }, 60000); // Update every minute
 
-    // Simulate trip completion after 5 minutes
-    const completionTimeout = setTimeout(() => {
-      navigation.replace('EndOfRide', {
-        ...route.params,
-        duration: tripDuration + 1,
-      });
-    }, 300000); // 5 minutes for demo
+    // Poll for trip completion (check if driver completed the trip)
+    const checkTripStatus = async () => {
+      try {
+        const { getActiveTrip } = require('../services/tripService');
+        const { getCurrentUser } = require('../utils/sessionHelper');
+        const currentUser = await getCurrentUser();
+        
+        if (currentUser) {
+          const activeTrip = await getActiveTrip(currentUser.id, 'passenger');
+          
+          // If trip is completed, navigate to rating screen
+          if (activeTrip && activeTrip.status === 'completed') {
+            console.log('[DuringRideScreen] Trip completed by driver, navigating to rating screen');
+            navigation.replace('EndOfRide', {
+              ...route.params,
+              duration: tripDuration,
+            });
+          }
+        }
+      } catch (error) {
+        console.error('[DuringRideScreen] Error checking trip status:', error);
+      }
+    };
+
+    // Check trip status every 3 seconds
+    const statusCheckInterval = setInterval(checkTripStatus, 3000);
 
     return () => {
       clearInterval(durationInterval);
-      clearTimeout(completionTimeout);
+      clearInterval(statusCheckInterval);
     };
-  }, []);
+  }, [tripDuration, navigation, route.params]);
 
   // Generate route coordinates when current location or dropoff changes
   useEffect(() => {

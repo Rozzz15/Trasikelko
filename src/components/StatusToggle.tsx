@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../theme';
-import { DriverStatus } from '../utils/driverLocationStorage';
+import { DriverStatus } from '../services/driverService';
 
 interface StatusToggleProps {
   status: DriverStatus;

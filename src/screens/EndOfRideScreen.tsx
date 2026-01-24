@@ -11,8 +11,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, Button, RatingComponent } from '../components';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
-import { updateTrip, getActiveTrip, setActiveTrip, Trip } from '../utils/tripStorage';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { updateTrip, getActiveTrip, rateTrip } from '../services/tripService';
+// Using Supabase only - no AsyncStorage
 
 interface EndOfRideScreenProps {
   navigation: any;
@@ -58,47 +58,28 @@ export const EndOfRideScreen: React.FC<EndOfRideScreenProps> = ({ navigation, ro
     
     // Update existing active trip with completion and payment info
     try {
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
+      const { getCurrentUser } = require('../utils/sessionHelper');
+      const user = await getCurrentUser();
+      if (user && user.id) {
         // Get active trip for this passenger
-        const activeTrip = await getActiveTrip(currentUserEmail, 'passenger');
+        const activeTrip = await getActiveTrip(user.id, 'passenger');
         if (activeTrip) {
           // Update existing trip with completion data
-          await updateTrip(activeTrip.id, {
+          const result = await updateTrip(activeTrip.id, {
             status: 'completed',
-            paymentMethod,
-            paymentStatus: 'completed',
-            completedAt: new Date().toISOString(),
+            payment_method: paymentMethod,
+            payment_status: 'completed',
+            completed_at: new Date().toISOString(),
             distance,
             duration,
             fare: finalFare,
-            driverName: driver.name,
-            tricyclePlate: driver.tricyclePlate,
           });
-        } else {
-          // Fallback: Create new trip if active trip not found (shouldn't happen)
-          console.warn('Active trip not found, creating new trip record');
-          const trip: Trip = {
-            id: `trip_${Date.now()}`,
-            passengerId: currentUserEmail,
-            driverId: `driver_${driver.name}`,
-            pickupLocation,
-            dropoffLocation,
-            fare: finalFare,
-            estimatedFare: finalFare,
-            distance,
-            duration,
-            status: 'completed',
-            paymentMethod,
-            paymentStatus: 'completed',
-            driverName: driver.name,
-            tricyclePlate: driver.tricyclePlate,
-            createdAt: new Date().toISOString(),
-            completedAt: new Date().toISOString(),
-          };
           
-          const { storeTrip } = await import('../utils/tripStorage');
-          await storeTrip(trip);
+          if (!result.success) {
+            console.error('Error updating trip:', result.error);
+          }
+        } else {
+          console.warn('Active trip not found - this should not happen during normal flow');
         }
       }
     } catch (error) {
@@ -118,55 +99,23 @@ export const EndOfRideScreen: React.FC<EndOfRideScreenProps> = ({ navigation, ro
     // Update trip with passenger rating of driver
     // passengerRating = rating given BY passenger TO driver
     try {
-      const currentUserEmail = await AsyncStorage.getItem('current_user_email');
-      if (currentUserEmail) {
+      const { getCurrentUser } = require('../utils/sessionHelper');
+      const user = await getCurrentUser();
+      if (user && user.id) {
         // Get the completed trip (should be the active trip we just updated)
-        const activeTrip = await getActiveTrip(currentUserEmail, 'passenger');
+        const activeTrip = await getActiveTrip(user.id, 'passenger');
         if (activeTrip) {
-          // Update trip with passenger rating of driver
-          await updateTrip(activeTrip.id, {
-            passengerRating: ratingValue,
-            passengerFeedback: feedbackText,
-            status: 'completed',
-          });
-
-          // Recalculate driver's overall rating and trust score after rating submission
-          // This updates the driver's safety badge based on the new rating
-          try {
-            const { getDriverSafetyRecord } = await import('../utils/safetyStorage');
-            if (activeTrip.driverId) {
-              await getDriverSafetyRecord(activeTrip.driverId);
-            }
-          } catch (error) {
-            console.error('Error updating driver safety record:', error);
-          }
-
-          // Clear active trip after rating is submitted
-          await setActiveTrip(null);
-        } else {
-          // Fallback: Update last completed trip if active trip not found
-          const { getTrips } = await import('../utils/tripStorage');
-          const trips = await getTrips();
-          const lastCompletedTrip = trips
-            .filter(t => t.passengerId === currentUserEmail && t.status === 'completed')
-            .sort((a, b) => new Date(b.completedAt || b.createdAt).getTime() - new Date(a.completedAt || a.createdAt).getTime())[0];
+          // Update trip with passenger rating of driver using rateTrip from tripService
+          const result = await rateTrip(activeTrip.id, ratingValue, feedbackText || '', 'passenger');
           
-          if (lastCompletedTrip) {
-            await updateTrip(lastCompletedTrip.id, {
-              passengerRating: ratingValue,
-              passengerFeedback: feedbackText,
-            });
-
-            // Recalculate driver's safety record
-            try {
-              const { getDriverSafetyRecord } = await import('../utils/safetyStorage');
-              if (lastCompletedTrip.driverId) {
-                await getDriverSafetyRecord(lastCompletedTrip.driverId);
-              }
-            } catch (error) {
-              console.error('Error updating driver safety record:', error);
-            }
+          if (!result.success) {
+            console.error('Error rating trip:', result.error);
           }
+          
+          // Note: rateTrip in tripService already updates driver's average rating
+          // No need to manually update driver safety record here
+        } else {
+          console.warn('Active trip not found - rating may not be saved');
         }
       }
     } catch (error) {

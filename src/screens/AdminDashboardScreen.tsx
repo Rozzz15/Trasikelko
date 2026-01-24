@@ -24,9 +24,12 @@ import {
   getAllPassengers,
   getAllDrivers,
   getAdminStatistics,
+  approveDiscount,
+  rejectDiscount,
 } from '../utils/adminStorage';
-import { UserAccount } from '../utils/userStorage';
+import { UserAccount as UserAccountAdmin } from '../utils/adminStorage';
 import { clearAdminSession, isAdminLoggedIn } from '../utils/adminAuth';
+import { supabase } from '../config/supabase';
 
 interface AdminDashboardScreenProps {
   navigation: any;
@@ -42,8 +45,8 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   onLogout,
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
-  const [drivers, setDrivers] = useState<UserAccount[]>([]);
-  const [passengers, setPassengers] = useState<UserAccount[]>([]);
+  const [drivers, setDrivers] = useState<UserAccountAdmin[]>([]);
+  const [passengers, setPassengers] = useState<UserAccountAdmin[]>([]);
   const [statistics, setStatistics] = useState({
     totalUsers: 0,
     totalPassengers: 0,
@@ -55,6 +58,7 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [driverFilter, setDriverFilter] = useState<'all' | 'pending' | 'verified' | 'rejected'>('all');
+  const [passengerFilter, setPassengerFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [imageTitle, setImageTitle] = useState<string>('');
   const [previousPendingCount, setPreviousPendingCount] = useState<number>(0);
@@ -64,10 +68,10 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
     checkAdminSession();
     loadData();
     
-    // Set up periodic check for new pending drivers (every 30 seconds)
+    // Set up periodic check for new pending drivers (every 5 seconds for real-time feel)
     const interval = setInterval(() => {
-      loadData();
-    }, 30000);
+      loadData(true); // Silent refresh - don't show loading spinner
+    }, 5000); // Reduced from 30s to 5s for better real-time sync
     
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,14 +96,34 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
     }
   };
 
-  const loadData = async () => {
+  const loadData = async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) {
+        setLoading(true);
+      }
+      console.log('[AdminDashboard] Loading data from database...');
+      
       const [allDrivers, allPassengers, stats] = await Promise.all([
         getAllDrivers(),
         getAllPassengers(),
         getAdminStatistics(),
       ]);
+      
+      console.log('[AdminDashboard] Real-time sync - Loaded drivers:', allDrivers.length);
+      console.log('[AdminDashboard] Real-time sync - Loaded passengers:', allPassengers.length);
+      
+      // Only log detailed info if not silent refresh
+      if (!silent) {
+        console.log('[AdminDashboard] All drivers data:', JSON.stringify(allDrivers, null, 2));
+        
+        // Log each driver's status and profile photo
+        allDrivers.forEach(driver => {
+          console.log(`[AdminDashboard] Driver ${driver.email}:`);
+          console.log(`  - status: ${driver.verificationStatus}`);
+          console.log(`  - profilePhoto: ${driver.profilePhoto}`);
+          console.log(`  - licenseFrontPhoto: ${driver.licenseFrontPhoto}`);
+        });
+      }
       
       // Check for new pending drivers
       if (previousPendingCount > 0 && stats.pendingDrivers > previousPendingCount) {
@@ -134,9 +158,15 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
       setDrivers(allDrivers);
       setPassengers(allPassengers);
       setStatistics(stats);
+      
+      if (!silent) {
+        console.log('[AdminDashboard] Statistics:', stats);
+      }
     } catch (error) {
-      console.error('Error loading data:', error);
-      Alert.alert('Error', 'Failed to load dashboard data');
+      console.error('[AdminDashboard] Error loading data:', error);
+      if (!silent) {
+        Alert.alert('Error', 'Failed to load dashboard data');
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -165,19 +195,25 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
           style: 'destructive',
           onPress: async () => {
             try {
+              console.log('[AdminDashboard] Logging out...');
+              
+              // Clear admin session from AsyncStorage
               await clearAdminSession();
-              // Navigate directly to Login screen
-              if (navigation) {
-                navigation.reset({
-                  index: 0,
-                  routes: [{ name: 'Login' }],
-                });
-              } else {
-                // Fallback: call onLogout if navigation is not available
-                onLogout();
+              console.log('[AdminDashboard] Admin session cleared');
+              
+              // Sign out from Supabase Auth
+              const { error } = await supabase.auth.signOut();
+              if (error) {
+                console.error('[AdminDashboard] Error signing out from Supabase:', error);
+                Alert.alert('Error', 'Failed to logout from Supabase. Please try again.');
+                return;
               }
+              console.log('[AdminDashboard] Signed out from Supabase successfully');
+              
+              // Call onLogout to properly handle logout and navigation
+              onLogout();
             } catch (error) {
-              console.error('Error during logout:', error);
+              console.error('[AdminDashboard] Error during logout:', error);
               Alert.alert('Error', 'Failed to logout. Please try again.');
             }
           },
@@ -232,11 +268,99 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
     );
   };
 
+  const handleApproveDiscount = async (userId: string, passengerName: string, discountType: string) => {
+    Alert.alert(
+      'Approve Discount',
+      `Approve ${discountType === 'senior' ? 'Senior Citizen' : 'PWD'} discount for ${passengerName}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Approve',
+          onPress: async () => {
+            try {
+              await approveDiscount(userId);
+              Alert.alert('Success', 'Discount has been approved successfully');
+              loadData();
+            } catch (error) {
+              Alert.alert('Error', 'Failed to approve discount');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleRejectDiscount = async (userId: string, passengerName: string, discountType: string) => {
+    // Use Alert.alert with predefined rejection reasons (works on all platforms)
+    Alert.alert(
+      'Reject Discount',
+      `Select reason for rejecting ${passengerName}'s ${discountType === 'senior' ? 'Senior Citizen' : 'PWD'} discount:`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'ID Photo Unclear',
+          onPress: async () => {
+            try {
+              await rejectDiscount(userId, 'ID photo is unclear or unreadable');
+              Alert.alert('Success', 'Discount has been rejected');
+              loadData();
+            } catch (error) {
+              Alert.alert('Error', 'Failed to reject discount');
+            }
+          },
+        },
+        {
+          text: 'Invalid ID',
+          onPress: async () => {
+            try {
+              await rejectDiscount(userId, 'ID appears to be invalid or expired');
+              Alert.alert('Success', 'Discount has been rejected');
+              loadData();
+            } catch (error) {
+              Alert.alert('Error', 'Failed to reject discount');
+            }
+          },
+        },
+        {
+          text: 'Wrong ID Type',
+          onPress: async () => {
+            try {
+              await rejectDiscount(userId, 'Uploaded ID does not match the discount type');
+              Alert.alert('Success', 'Discount has been rejected');
+              loadData();
+            } catch (error) {
+              Alert.alert('Error', 'Failed to reject discount');
+            }
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
   const filteredDrivers = drivers.filter((driver) => {
     if (driverFilter === 'all') return true;
     // Handle undefined/null verificationStatus - treat as 'pending'
     const status = driver.verificationStatus || 'pending';
+    
+    console.log(`[AdminDashboard] Filtering driver ${driver.email}: status="${status}", filter="${driverFilter}", match=${status === driverFilter}`);
+    
     return status === driverFilter;
+  });
+
+  const filteredPassengers = passengers.filter((passenger) => {
+    if (passengerFilter === 'all') return true;
+    const status = passenger.discountVerificationStatus || 'none';
+    
+    if (passengerFilter === 'pending') {
+      return status === 'pending';
+    } else if (passengerFilter === 'approved') {
+      return status === 'approved';
+    } else if (passengerFilter === 'rejected') {
+      return status === 'rejected';
+    }
+    
+    return true;
   });
 
   const getStatusColor = (status?: string) => {
@@ -474,7 +598,11 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
           </TouchableOpacity>
         </View>
         {drivers.filter(d => d.verificationStatus === 'pending').length > 0 ? (
-          drivers.filter(d => d.verificationStatus === 'pending').slice(0, 3).map((driver) => (
+          drivers.filter(d => d.verificationStatus === 'pending').slice(0, 3).map((driver) => {
+            console.log(`[AdminDashboard OVERVIEW] Rendering recent card for: ${driver.email}`);
+            console.log(`[AdminDashboard OVERVIEW] - profilePhoto: "${driver.profilePhoto}"`);
+            
+            return (
             <TouchableOpacity
               key={driver.email}
               style={styles.recentCard}
@@ -487,7 +615,12 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
               <View style={styles.recentCardContent}>
                 <View style={styles.recentCardLeft}>
                   {driver.profilePhoto ? (
-                    <Image source={{ uri: driver.profilePhoto }} style={styles.recentAvatar} />
+                    <Image 
+                      source={{ uri: driver.profilePhoto }} 
+                      style={styles.recentAvatar}
+                      onError={(e) => console.log(`[Overview] Failed to load profile photo for ${driver.email}:`, e.nativeEvent.error)}
+                      onLoad={() => console.log(`[Overview] Profile photo loaded for ${driver.email}`)}
+                    />
                   ) : (
                     <View style={styles.recentAvatarPlaceholder}>
                       <Ionicons name="person" size={20} color={colors.white} />
@@ -515,7 +648,8 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
                 </View>
               </View>
             </TouchableOpacity>
-          ))
+            );
+          })
         ) : (
           <View style={styles.emptyState}>
             <Ionicons name="checkmark-circle-outline" size={48} color={colors.success} />
@@ -595,12 +729,25 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
             </Text>
           </View>
         ) : (
-          filteredDrivers.map((driver) => (
+          filteredDrivers.map((driver) => {
+            console.log(`[AdminDashboard RENDER] Rendering driver card for: ${driver.email}`);
+            console.log(`[AdminDashboard RENDER] - profilePhoto value: "${driver.profilePhoto}"`);
+            console.log(`[AdminDashboard RENDER] - Will show image: ${!!driver.profilePhoto}`);
+            
+            return (
             <View key={driver.email} style={styles.modernCard}>
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeft}>
                   {driver.profilePhoto ? (
-                    <Image source={{ uri: driver.profilePhoto }} style={styles.modernAvatar} />
+                    <Image 
+                      source={{ uri: driver.profilePhoto }} 
+                      style={styles.modernAvatar}
+                      onError={(e) => {
+                        console.log(`[AdminDashboard] Failed to load profile photo for ${driver.email}:`, e.nativeEvent.error);
+                        console.log(`[AdminDashboard] Image URI was: ${driver.profilePhoto}`);
+                      }}
+                      onLoad={() => console.log(`[AdminDashboard] Profile photo loaded successfully for ${driver.email}`)}
+                    />
                   ) : (
                     <View style={styles.modernAvatarPlaceholder}>
                       <Ionicons name="person" size={24} color={colors.white} />
@@ -692,6 +839,30 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
                 )}
               </View>
 
+              {/* Profile Photo */}
+              {driver.profilePhoto && (
+                <View style={styles.modernPhotosSection}>
+                  <Text style={styles.modernPhotosTitle}>Profile Photo</Text>
+                  <TouchableOpacity 
+                    style={styles.modernPhotoContainer}
+                    activeOpacity={0.9}
+                    onPress={() => {
+                      setSelectedImage(driver.profilePhoto || null);
+                      setImageTitle('Profile Photo');
+                    }}
+                  >
+                    <Image
+                      source={{ uri: driver.profilePhoto }}
+                      style={styles.modernPhoto}
+                      resizeMode="cover"
+                      onError={(e) => console.log('Failed to load profile photo:', e.nativeEvent.error)}
+                      onLoad={() => console.log('Profile photo loaded successfully')}
+                    />
+                    <Text style={styles.modernPhotoLabel}>Profile Photo</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {/* License Photos */}
               {(driver.licenseFrontPhoto || driver.licenseBackPhoto) && (
                 <View style={styles.modernPhotosSection}>
@@ -710,6 +881,8 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
                           source={{ uri: driver.licenseFrontPhoto }}
                           style={styles.modernPhoto}
                           resizeMode="cover"
+                          onError={(e) => console.log('Failed to load license front:', e.nativeEvent.error)}
+                          onLoad={() => console.log('License front loaded successfully')}
                         />
                         <Text style={styles.modernPhotoLabel}>Front</Text>
                       </TouchableOpacity>
@@ -727,6 +900,8 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
                           source={{ uri: driver.licenseBackPhoto }}
                           style={styles.modernPhoto}
                           resizeMode="cover"
+                          onError={(e) => console.log('Failed to load license back:', e.nativeEvent.error)}
+                          onLoad={() => console.log('License back loaded successfully')}
                         />
                         <Text style={styles.modernPhotoLabel}>Back</Text>
                       </TouchableOpacity>
@@ -751,6 +926,8 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
                       source={{ uri: driver.orcrPhoto }}
                       style={styles.modernPhoto}
                       resizeMode="cover"
+                      onError={(e) => console.log('Failed to load ORCR:', e.nativeEvent.error)}
+                      onLoad={() => console.log('ORCR loaded successfully')}
                     />
                     <Text style={styles.modernPhotoLabel}>OR/CR Photo</Text>
                   </TouchableOpacity>
@@ -788,7 +965,8 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
                 </View>
               )}
             </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
     </View>
@@ -802,12 +980,50 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
         <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
       }
     >
+      {/* Filter Tabs */}
+      <View style={styles.filterContainer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <TouchableOpacity
+            style={[styles.filterChip, passengerFilter === 'all' && styles.filterChipActive]}
+            onPress={() => setPassengerFilter('all')}
+          >
+            <Text style={[styles.filterChipText, passengerFilter === 'all' && styles.filterChipTextActive]}>
+              All ({passengers.length})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.filterChip, passengerFilter === 'pending' && styles.filterChipActive]}
+            onPress={() => setPassengerFilter('pending')}
+          >
+            <Text style={[styles.filterChipText, passengerFilter === 'pending' && styles.filterChipTextActive]}>
+              Pending ({passengers.filter(p => p.discountVerificationStatus === 'pending').length})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.filterChip, passengerFilter === 'approved' && styles.filterChipActive]}
+            onPress={() => setPassengerFilter('approved')}
+          >
+            <Text style={[styles.filterChipText, passengerFilter === 'approved' && styles.filterChipTextActive]}>
+              Approved ({passengers.filter(p => p.discountVerificationStatus === 'approved').length})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.filterChip, passengerFilter === 'rejected' && styles.filterChipActive]}
+            onPress={() => setPassengerFilter('rejected')}
+          >
+            <Text style={[styles.filterChipText, passengerFilter === 'rejected' && styles.filterChipTextActive]}>
+              Rejected ({passengers.filter(p => p.discountVerificationStatus === 'rejected').length})
+            </Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
+
       {loading ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.loadingText}>Loading passengers...</Text>
         </View>
-      ) : passengers.length === 0 ? (
+      ) : filteredPassengers.length === 0 ? (
         <View style={styles.centerContainer}>
           <View style={styles.emptyIconContainer}>
             <Ionicons name="people-outline" size={64} color={colors.gray} />
@@ -815,8 +1031,9 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
           <Text style={styles.emptyText}>No passengers found</Text>
         </View>
       ) : (
-        passengers.map((passenger) => (
+        filteredPassengers.map((passenger) => (
           <View key={passenger.email} style={styles.modernCard}>
+            {/* Passenger Header */}
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderLeft}>
                 {passenger.profilePhoto ? (
@@ -837,6 +1054,180 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
                 <Text style={[styles.modernBadgeText, { color: colors.success }]}>Active</Text>
               </View>
             </View>
+
+            {/* Discount Verification Section */}
+            {passenger.discountVerificationStatus && passenger.discountVerificationStatus !== 'none' && (
+              <View style={styles.discountSection}>
+                <View style={styles.discountHeader}>
+                  <View style={styles.discountHeaderLeft}>
+                    <Ionicons 
+                      name={passenger.discountType === 'senior' ? 'person' : 'heart'} 
+                      size={20} 
+                      color={colors.primary} 
+                    />
+                    <Text style={styles.discountTitle}>
+                      {passenger.discountType === 'senior' ? 'Senior Citizen' : 'PWD'} Discount
+                    </Text>
+                  </View>
+                  <View style={[
+                    styles.discountStatusBadge,
+                    {
+                      backgroundColor: 
+                        passenger.discountVerificationStatus === 'approved' ? colors.success + '15' :
+                        passenger.discountVerificationStatus === 'rejected' ? colors.error + '15' :
+                        colors.warning + '15'
+                    }
+                  ]}>
+                    <Text style={[
+                      styles.discountStatusText,
+                      {
+                        color: 
+                          passenger.discountVerificationStatus === 'approved' ? colors.success :
+                          passenger.discountVerificationStatus === 'rejected' ? colors.error :
+                          colors.warning
+                      }
+                    ]}>
+                      {passenger.discountVerificationStatus === 'approved' ? 'Approved' :
+                       passenger.discountVerificationStatus === 'rejected' ? 'Rejected' :
+                       'Pending Review'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* ID Photos */}
+                {(passenger.seniorIdPhoto || passenger.pwdIdPhoto) && (
+                  <View style={styles.idPhotosContainer}>
+                    <Text style={styles.idPhotosLabel}>Uploaded ID:</Text>
+                    <View style={styles.idPhotosRow}>
+                      {passenger.discountType === 'senior' && passenger.seniorIdPhoto && (
+                        <>
+                          {passenger.seniorIdPhoto.includes('|') ? (
+                            <>
+                              <TouchableOpacity 
+                                style={styles.idPhotoWrapper}
+                                onPress={() => {
+                                  setSelectedImage(passenger.seniorIdPhoto!.split('|')[0]);
+                                  setImageTitle('Senior Citizen ID - Front');
+                                }}
+                              >
+                                <Image 
+                                  source={{ uri: passenger.seniorIdPhoto.split('|')[0] }} 
+                                  style={styles.idPhoto}
+                                />
+                                <Text style={styles.idPhotoLabel}>Front</Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity 
+                                style={styles.idPhotoWrapper}
+                                onPress={() => {
+                                  setSelectedImage(passenger.seniorIdPhoto!.split('|')[1]);
+                                  setImageTitle('Senior Citizen ID - Back');
+                                }}
+                              >
+                                <Image 
+                                  source={{ uri: passenger.seniorIdPhoto.split('|')[1] }} 
+                                  style={styles.idPhoto}
+                                />
+                                <Text style={styles.idPhotoLabel}>Back</Text>
+                              </TouchableOpacity>
+                            </>
+                          ) : (
+                            <TouchableOpacity 
+                              style={styles.idPhotoWrapper}
+                              onPress={() => {
+                                setSelectedImage(passenger.seniorIdPhoto!);
+                                setImageTitle('Senior Citizen ID');
+                              }}
+                            >
+                              <Image 
+                                source={{ uri: passenger.seniorIdPhoto }} 
+                                style={styles.idPhoto}
+                              />
+                              <Text style={styles.idPhotoLabel}>ID Photo</Text>
+                            </TouchableOpacity>
+                          )}
+                        </>
+                      )}
+                      {passenger.discountType === 'pwd' && passenger.pwdIdPhoto && (
+                        <>
+                          {passenger.pwdIdPhoto.includes('|') ? (
+                            <>
+                              <TouchableOpacity 
+                                style={styles.idPhotoWrapper}
+                                onPress={() => {
+                                  setSelectedImage(passenger.pwdIdPhoto!.split('|')[0]);
+                                  setImageTitle('PWD ID - Front');
+                                }}
+                              >
+                                <Image 
+                                  source={{ uri: passenger.pwdIdPhoto.split('|')[0] }} 
+                                  style={styles.idPhoto}
+                                />
+                                <Text style={styles.idPhotoLabel}>Front</Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity 
+                                style={styles.idPhotoWrapper}
+                                onPress={() => {
+                                  setSelectedImage(passenger.pwdIdPhoto!.split('|')[1]);
+                                  setImageTitle('PWD ID - Back');
+                                }}
+                              >
+                                <Image 
+                                  source={{ uri: passenger.pwdIdPhoto.split('|')[1] }} 
+                                  style={styles.idPhoto}
+                                />
+                                <Text style={styles.idPhotoLabel}>Back</Text>
+                              </TouchableOpacity>
+                            </>
+                          ) : (
+                            <TouchableOpacity 
+                              style={styles.idPhotoWrapper}
+                              onPress={() => {
+                                setSelectedImage(passenger.pwdIdPhoto!);
+                                setImageTitle('PWD ID');
+                              }}
+                            >
+                              <Image 
+                                source={{ uri: passenger.pwdIdPhoto }} 
+                                style={styles.idPhoto}
+                              />
+                              <Text style={styles.idPhotoLabel}>ID Photo</Text>
+                            </TouchableOpacity>
+                          )}
+                        </>
+                      )}
+                    </View>
+                  </View>
+                )}
+
+                {/* Rejection Reason */}
+                {passenger.discountVerificationStatus === 'rejected' && passenger.discountRejectionReason && (
+                  <View style={styles.rejectionReasonContainer}>
+                    <Text style={styles.rejectionReasonLabel}>Rejection Reason:</Text>
+                    <Text style={styles.rejectionReasonText}>{passenger.discountRejectionReason}</Text>
+                  </View>
+                )}
+
+                {/* Action Buttons for Pending */}
+                {passenger.discountVerificationStatus === 'pending' && (
+                  <View style={styles.discountActionsContainer}>
+                    <TouchableOpacity
+                      style={[styles.discountActionButton, styles.approveButton]}
+                      onPress={() => handleApproveDiscount(passenger.id, passenger.fullName, passenger.discountType!)}
+                    >
+                      <Ionicons name="checkmark-circle" size={20} color={colors.white} />
+                      <Text style={styles.discountActionButtonText}>Approve</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.discountActionButton, styles.rejectButton]}
+                      onPress={() => handleRejectDiscount(passenger.id, passenger.fullName, passenger.discountType!)}
+                    >
+                      <Ionicons name="close-circle" size={20} color={colors.white} />
+                      <Text style={styles.discountActionButtonText}>Reject</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            )}
           </View>
         ))
       )}
@@ -1791,5 +2182,113 @@ const styles = StyleSheet.create({
   fullSizeImage: {
     width: width,
     height: width * 1.5,
+  },
+  // Discount Verification Styles
+  discountSection: {
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.lightGray,
+  },
+  discountHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  discountHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  discountTitle: {
+    ...typography.h3,
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: spacing.xs,
+    color: colors.darkText,
+  },
+  discountStatusBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: borderRadius.sm,
+  },
+  discountStatusText: {
+    ...typography.body,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  idPhotosContainer: {
+    marginTop: spacing.sm,
+  },
+  idPhotosLabel: {
+    ...typography.body,
+    fontSize: 14,
+    color: colors.gray,
+    marginBottom: spacing.xs,
+  },
+  idPhotosRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  idPhotoWrapper: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  idPhoto: {
+    width: '100%',
+    height: 120,
+    borderRadius: borderRadius.sm,
+    backgroundColor: colors.lightGray,
+  },
+  idPhotoLabel: {
+    ...typography.body,
+    fontSize: 12,
+    color: colors.gray,
+    marginTop: spacing.xs,
+  },
+  rejectionReasonContainer: {
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    backgroundColor: colors.error + '10',
+    borderRadius: borderRadius.sm,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.error,
+  },
+  rejectionReasonLabel: {
+    ...typography.body,
+    fontSize: 12,
+    color: colors.error,
+    fontWeight: '600',
+    marginBottom: spacing.xs,
+  },
+  rejectionReasonText: {
+    ...typography.body,
+    fontSize: 14,
+    color: colors.darkText,
+  },
+  discountActionsContainer: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  discountActionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.sm,
+    gap: spacing.xs,
+  },
+  approveButton: {
+    backgroundColor: colors.success,
+  },
+  rejectButton: {
+    backgroundColor: colors.error,
+  },
+  discountActionButtonText: {
+    ...typography.button,
+    color: colors.white,
+    fontSize: 14,
   },
 });

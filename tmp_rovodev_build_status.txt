@@ -1,0 +1,57 @@
+﻿
+Builds for @rozzz15/traysikelko:
+
+ID                       7c8ca045-46bc-4908-95fb-9c9f3bbd43bb
+Platform                 Android
+Status                   new
+Profile                  preview
+Distribution             internal
+SDK Version              54.0.0
+Version                  1.0.0
+Version code             5
+Commit                   846c790c5003d3084a14f2fa94feb83126ab5479
+Logs                     https://expo.dev/accounts/rozzz15/projects/traysikelko/builds/7c8ca045-46bc-4908-95fb-9c9f3bbd43bb
+Application Archive URL  null
+Build Artifacts URL      null
+Fingerprint              <in progress>
+Started at               1/24/2026, 4:36:35 AM
+Finished at              <in progress>
+Started by               rozzz15
+
+ΓÇöΓÇöΓÇö
+
+ID                       674e97dc-63e4-4c37-bf3f-5dc9be8fa9e8
+Platform                 Android
+Status                   canceled
+Profile                  preview
+Distribution             internal
+SDK Version              54.0.0
+Version                  1.0.0
+Version code             5
+Commit                   846c790c5003d3084a14f2fa94feb83126ab5479
+Logs                     https://expo.dev/accounts/rozzz15/projects/traysikelko/builds/674e97dc-63e4-4c37-bf3f-5dc9be8fa9e8
+Application Archive URL  null
+Build Artifacts URL      null
+Started at               1/24/2026, 3:53:39 AM
+Finished at              1/24/2026, 4:37:26 AM
+Started by               rozzz15
+
+ΓÇöΓÇöΓÇö
+
+ID                       b568ed72-33b7-42eb-b78d-018c4cd5bccc
+Platform                 Android
+Status                   in queue
+Profile                  preview
+Distribution             internal
+SDK Version              54.0.0
+Version                  1.0.0
+Version code             5
+Commit                   846c790c5003d3084a14f2fa94feb83126ab5479
+Logs                     https://expo.dev/accounts/rozzz15/projects/traysikelko/builds/b568ed72-33b7-42eb-b78d-018c4cd5bccc
+Application Archive URL  null
+Build Artifacts URL      null
+Fingerprint              <in progress>
+Started at               1/24/2026, 3:42:09 AM
+Finished at              <in progress>
+Started by               rozzz15
+Input is required, but stdin is not readable. Failed to display prompt: Load more builds?

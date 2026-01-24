@@ -63,7 +63,7 @@ export const SplashScreen: React.FC = () => {
       >
         <View style={styles.imageContainer}>
           <Image
-            source={require('../../assets/TRAYSIKEL.png')}
+            source={require('../../assets/traysi.png')}
             style={styles.logoImage}
             resizeMode="contain"
           />

@@ -1,13 +1,20 @@
 {
   "expo": {
-    "name": "Traysikel KO",
-    "slug": "traysikel-ko",
+    "name": "TraysikelKO",
+    "slug": "traysikelko",
     "version": "1.0.0",
+    "icon": "./assets/icon.png",
+    "extra": {
+      "eas": {
+        "projectId": "4fa8f855-66cc-437e-a9f8-ccb4bc9773a6"
+      }
+    },
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
+      "image": "./assets/traysi.png",
       "resizeMode": "contain",
-      "backgroundColor": "#2F80ED"
+      "backgroundColor": "#FFF8F5"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -15,6 +22,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.traysikelko.app",
+      "icon": "./assets/icon.png",
       "infoPlist": {
         "NSPhoneCallUsageDescription": "This app needs access to make emergency phone calls.",
         "NSCameraUsageDescription": "This app needs access to your camera to take photos for your profile and documents.",
@@ -22,7 +30,9 @@
       }
     },
     "android": {
+      "icon": "./assets/icon.png",
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#2F80ED"
       },
       "package": "com.traysikelko.app",
@@ -32,9 +42,13 @@
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
         "CALL_PHONE",
-        "READ_PHONE_STATE"
+        "READ_PHONE_STATE",
+        "POST_NOTIFICATIONS"
       ]
     },
-    "web": {}
+    "web": {},
+    "plugins": [
+      "expo-font"
+    ]
   }
 }

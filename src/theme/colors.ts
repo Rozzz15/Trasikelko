@@ -16,6 +16,10 @@ export const colors = {
   overlay: 'rgba(0, 0, 0, 0.5)',
   driverOnline: '#34C759',
   driverOffline: '#8E8E93',
+  text: '#1D1D1D',
+  lightBlue: '#E3F2FD',
+  primaryLight: 'rgba(47, 128, 237, 0.1)',
+  errorLight: 'rgba(255, 59, 48, 0.1)',
 };
 
 
