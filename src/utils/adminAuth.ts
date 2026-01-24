@@ -130,10 +130,11 @@ export const validateAdminLogin = async (email: string, password: string): Promi
     console.log('[AdminAuth] Supabase Auth successful, checking if user is admin...');
     
     // Step 2: Check if this authenticated user is in admin_users table
+    // Check by email instead of ID to handle cases where IDs might not match
     const { data: admin, error: adminError } = await supabase
       .from('admin_users')
       .select('*')
-      .eq('id', authData.user.id) // Match by Supabase Auth user ID
+      .eq('email', normalizedEmail) // Match by email (more reliable)
       .eq('is_active', true)
       .single();
     
