@@ -394,8 +394,8 @@ export const CreateAccountScreen: React.FC<CreateAccountScreenProps> = ({
               {
                 text: 'OK',
                 onPress: () => {
-                  // Navigate back to login - driver cannot access account until approved
-                  navigation.navigate('Login', { email: driverData.email });
+                  // Navigate back - driver cannot access account until approved
+                  onBack();
                 },
               },
             ]
